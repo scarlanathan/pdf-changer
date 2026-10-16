@@ -1,0 +1,11 @@
+PyMuPDF>=1.24.10
+Flask>=3.0
+numpy
+# Reconnaissance de texte (OCR) via le moteur integre a Windows 10/11
+winrt-runtime; sys_platform == "win32"
+winrt-Windows.Foundation; sys_platform == "win32"
+winrt-Windows.Foundation.Collections; sys_platform == "win32"
+winrt-Windows.Globalization; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging; sys_platform == "win32"
+winrt-Windows.Media.Ocr; sys_platform == "win32"
+winrt-Windows.Storage.Streams; sys_platform == "win32"
