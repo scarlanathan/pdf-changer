@@ -1,101 +1,131 @@
 # PDF Changer
 
-Éditeur de PDF local avec interface web : supprimer, modifier, déplacer et ajouter des éléments en quelques clics.
-Tout se passe sur votre machine, aucun fichier n'est envoyé sur Internet.
+Éditeur de PDF pour Windows : modifier le texte d'un PDF, supprimer ou déplacer des éléments, ajouter des
+images, signer, remplir un formulaire, réorganiser les pages… en quelques clics.
+Tout se passe sur votre ordinateur : **aucun fichier n'est envoyé sur Internet**.
 
-## Application Windows (.exe)
+![La fenêtre de PDF Changer](assets/capture.png)
 
-Le plus simple : l'application s'ouvre dans sa propre fenêtre, sans navigateur ni Python à installer.
+## Télécharger et installer
 
-- **Prérequis** : Windows 10 ou 11 (le moteur d'affichage Edge WebView2 y est déjà présent).
-- **Construire** : `python build_exe.py` crée `dist/PDF Changer/PDF Changer.exe` et une archive
-  `dist/PDF Changer (Windows).zip` (~45 Mo) à copier sur un autre PC. Le script prépare tout seul un
-  environnement Python propre dans `build/` (Internet nécessaire la première fois).
-- **Utiliser** : décompresser l'archive où l'on veut, lancer `PDF Changer.exe`. Pour ouvrir les PDF par
-  double-clic : clic droit sur un PDF › Ouvrir avec › Choisir une autre application › `PDF Changer.exe`.
-- « Enregistrer » ouvre la boîte « Enregistrer sous » de Windows ; la fenêtre demande confirmation si l'on
-  ferme avec des modifications non enregistrées. Signatures et réglages sont gardés dans
-  `%LOCALAPPDATA%\PDF Changer`, avec un journal (`journal.txt`) en cas de problème.
-- L'exécutable n'est pas signé : au premier lancement, Windows SmartScreen peut afficher « Windows a protégé
-  votre ordinateur » › « Informations complémentaires » › « Exécuter quand même ».
+1. Téléchargez **[PDF-Changer-Windows.zip](https://github.com/scarlanathan/pdf-changer/releases/latest/download/PDF-Changer-Windows.zip)**
+   (~45 Mo, page de la [dernière version](https://github.com/scarlanathan/pdf-changer/releases/latest)).
+2. Décompressez-le où vous voulez (clic droit › *Extraire tout…*), par exemple dans *Documents*.
+3. Ouvrez le dossier `PDF Changer` et lancez **`PDF Changer.exe`**.
 
-## Lancer depuis les sources
+Rien d'autre à installer : il suffit de **Windows 10 ou 11**.
 
-Double-cliquez sur **`Lancer PDF Changer.bat`** (les dépendances s'installent toutes seules au premier lancement),
-ou bien :
+> **Au premier lancement**, Windows peut afficher « Windows a protégé votre ordinateur » : l'application
+> n'est pas signée numériquement. Cliquez sur **Informations complémentaires**, puis **Exécuter quand même**.
+
+**Ouvrir vos PDF par double-clic** : clic droit sur un fichier PDF › *Ouvrir avec* › *Choisir une autre
+application* › *Rechercher une autre application sur ce PC* › sélectionnez `PDF Changer.exe` (cochez
+« Toujours utiliser cette application » si vous le souhaitez).
+
+## Prise en main en 5 minutes
+
+1. **Ouvrir un document** : bouton **Ouvrir** (ou `Ctrl+O`), ou glissez un fichier sur la fenêtre.
+   PDF, images (JPG, PNG…), XPS et EPUB sont acceptés ; pour un PDF protégé, le mot de passe est demandé.
+   **Nouveau** crée un document vierge.
+2. **Sélectionner** : cliquez sur un texte, une image ou une forme. Une petite barre apparaît au-dessus
+   (Modifier, Dupliquer, Supprimer) et le panneau de droite affiche ses réglages. Le **clic droit** donne
+   toutes les actions possibles. Pour en sélectionner plusieurs : `Maj`+clic, ou tracez un cadre dans le vide.
+3. **Modifier un texte** : **double-cliquez** dessus et tapez. Un paragraphe se remet en forme tout seul
+   dans sa largeur ; `Entrée` valide, `Échap` annule. Pour écrire un nouveau texte, double-cliquez dans
+   une zone vide.
+4. **Ajouter quelque chose** : choisissez un outil dans la barre au-dessus de la page (texte, image,
+   formes, dessin, surligneur, cache blanc, gomme), puis cliquez ou glissez sur la page.
+   Pour **signer**, prenez l'outil Dessin, puis « Créer une signature » dans le panneau de droite : elle
+   sera gardée pour la poser ensuite en un clic sur n'importe quel document.
+5. **Enregistrer** : bouton **Enregistrer** (ou `Ctrl+S`), choisissez l'emplacement. Votre fichier
+   d'origine n'est jamais modifié tant que vous ne l'écrasez pas vous-même. Un point ● à côté du nom du
+   document signale des modifications non enregistrées.
+
+Une erreur ? **`Ctrl+Z`** annule (et `Ctrl+Y` rétablit), autant de fois que nécessaire.
+La barre en bas de la fenêtre indique toujours ce que l'on peut faire avec l'élément survolé, et
+**`?`** affiche l'aide complète des raccourcis.
+
+## Tout ce qu'on peut faire
+
+### Texte
+| Action | Comment |
+| --- | --- |
+| Réécrire un paragraphe | Double-clic : le texte se remet en forme dans la largeur du bloc (alignement conservé) |
+| Réécrire une seule ligne | `Alt` + double-clic ; une ligne au style mixte (mot en gras, exposant) garde ses styles |
+| Mettre en forme | Pendant l'édition, barre flottante : police, taille, gras, italique, couleur, alignement ; poignée à droite pour la largeur |
+| Ajouter un texte | Double-clic dans le vide, ou outil `T` |
+| Rechercher / remplacer | `Ctrl+F` / `Ctrl+H` ; le style de chaque mot est conservé |
+| PDF scanné (image) | À l'ouverture, « Rendre le texte modifiable » reconnaît le texte (OCR) ; il se modifie ensuite comme un PDF normal |
+
+### Éléments
+| Action | Comment |
+| --- | --- |
+| Supprimer | Sélectionner puis `Suppr` ; la suppression est **réelle** (le contenu est retiré du fichier) |
+| Déplacer / redimensionner | Glisser l'élément ou ses poignées ; flèches du clavier pour ajuster (`Maj` = ×10). Des guides aident à aligner (`Ctrl` pour les désactiver) |
+| Dupliquer | `Ctrl+D`, ou `Alt` + glisser |
+| Copier / couper / coller | `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, y compris vers une autre page |
+| Images | Outil `I`, coller une image (`Ctrl+V`) ou glisser un fichier image sur la page |
+| Formes et dessin | Rectangle `R`, ellipse `O`, ligne `L`, flèche `A`, dessin libre `D` |
+| Surligner | Outil `H` |
+| Masquer une zone | Cache blanc `W` (le contenu reste dessous) |
+| Effacer une zone | Gomme `E` (tout ce qu'elle contient est supprimé du fichier) |
+| Signature | Outil `D` › « Créer une signature » ; puis clic sur la signature et sur la page, ou clic droit › « Signer ici » |
+| Formulaire | Cliquer dans un champ (fond bleuté) et taper ; `Tab` passe au champ suivant ; cases, boutons et listes d'un clic |
+
+### Pages et document
+| Action | Comment |
+| --- | --- |
+| Pivoter, dupliquer, supprimer, page blanche | Boutons au survol d'une miniature (à gauche) ou clic droit dessus |
+| Réordonner | Glisser une miniature |
+| Plusieurs pages à la fois | `Ctrl`/`Maj`+clic sur les miniatures, puis la barre d'actions en bas à gauche |
+| Insérer un autre PDF ou une image | « Insérer un PDF / une image », ou glisser le fichier sur une miniature |
+| Aller à une page | Numéro en haut de la fenêtre, `PageUp` / `PageDown` |
+| Zoom | Pourcentage en haut (50 % à 400 %, largeur, page entière), `Ctrl`+molette, `Ctrl+0` / `Ctrl+9` |
+| Extraire des pages / réduire la taille | Flèche à côté d'« Enregistrer » (`Ctrl+Maj+S`) : pages choisies, images recompressées pour l'envoyer par e-mail |
+
+### Confort
+- **Tout au clavier** : `Tab` / `Maj+Tab` parcourt les éléments de la page, `Entrée` modifie, `Maj+F10` ouvre le menu.
+- **Petit écran, tablette** : les panneaux se replient derrière deux boutons en haut de la fenêtre ; au doigt, un
+  élément sélectionné se déplace.
+- Le PDF enregistré reste léger : seuls les caractères utilisés des polices ajoutées y sont intégrés.
+
+## Bon à savoir
+
+- **Confidentialité** : aucune connexion à Internet n'est nécessaire ni utilisée. La reconnaissance de texte
+  utilise le moteur intégré à Windows, dans la langue de Windows.
+- **Signatures et réglages** sont gardés sur votre ordinateur, dans `%LOCALAPPDATA%\PDF Changer`, avec un
+  journal (`journal.txt`) utile en cas de problème.
+- Si vous fermez la fenêtre avec des modifications non enregistrées, l'application demande confirmation.
+
+### Limites connues
+- Le texte écrit de droite à gauche (hébreu, arabe) ne peut pas encore être réécrit : l'application le signale
+  et laisse la ligne telle quelle. Chinois, japonais, coréen et symboles fonctionnent.
+- Un texte modifié reprend la police d'origine quand elle est intégrée au PDF et contient les caractères
+  nécessaires ; sinon une police proche est utilisée.
+- Quand un paragraphe entier est réécrit, il prend un style unique : un mot en gras au milieu redevient
+  normal. Pour garder ces styles, modifiez la ligne seule (`Alt` + double-clic) ou utilisez Rechercher / remplacer.
+- La reconnaissance de texte peut se tromper sur des scans de mauvaise qualité.
+
+## Pour les développeurs
+
+Prérequis : Windows 10/11 et Python 3.10 ou plus récent.
 
 ```
 pip install -r requirements.txt
-python app.py          # dans le navigateur (http://127.0.0.1:5173 par défaut)
-python desktop.py      # dans une fenêtre (pip install pywebview)
+python app.py          # dans le navigateur (http://127.0.0.1:5173) ; ou « Lancer PDF Changer.bat »
+pip install pywebview
+python desktop.py      # dans une fenêtre, comme l'application Windows
+python build_exe.py    # construit dist/PDF Changer/PDF Changer.exe et l'archive .zip
 ```
 
-Prérequis : Windows 10/11, Python 3.10 ou plus récent ; Chrome ou Edge conseillés (vraie boîte
-« Enregistrer sous »). PyMuPDF est figé à la version testée (`requirements.txt`).
-
-## Ce qu'on peut faire
-
-| Action | Comment |
-| --- | --- |
-| Supprimer un élément (texte, image, forme, annotation, champ) | Clic dessus puis `Suppr` (ou la mini-barre « Supprimer ») |
-| Réécrire un paragraphe | Double-clic dessus : le texte se remet en forme tout seul dans la largeur du bloc (alignement conservé : gauche, centré, droite, justifié) |
-| Réécrire une seule ligne | `Alt` + double-clic (ou « Ligne seule » dans la mini-barre) ; une ligne au style mixte (mot en gras, exposant) garde ses styles |
-| Mettre en forme pendant l'édition | Barre flottante : police, taille, gras, italique, couleur, alignement ; poignée à droite pour changer la largeur |
-| Texte incliné ou pivoté | Se réécrit comme les autres, à son angle d'origine |
-| Rechercher / remplacer | `Ctrl+F` / `Ctrl+H` — le style de chaque mot est conservé |
-| PDF scanné | À l'ouverture, « Rendre le texte modifiable » lance la reconnaissance de texte (OCR) ; ensuite tout se modifie comme un PDF normal |
-| Ajouter un texte | Double-clic dans une zone vide (ou outil `T`) |
-| Déplacer / redimensionner | Glisser l'élément / tirer les poignées ; flèches du clavier pour ajuster |
-| Dupliquer | `Ctrl+D` ou `Alt` + glisser |
-| Copier / couper / coller des éléments | `Ctrl+C`, `Ctrl+X`, `Ctrl+V` — aussi vers une autre page ; le texte copié se colle aussi ailleurs |
-| Toutes les actions d'un élément ou d'une page | Clic droit (sur la page ou sur une miniature) |
-| Aligner proprement | En glissant, des guides roses apparaissent et l'élément s'aimante aux bords et centres (page et autres éléments) ; `Ctrl` pour désactiver |
-| Sélection multiple | `Maj`+clic ou tracer un cadre dans le vide |
-| Ajouter une image | Outil `I`, `Ctrl+V` d'une image copiée, ou glisser un fichier image sur la page |
-| Formes, flèches, dessin libre | Outils `R`, `O`, `L`, `A`, `D` |
-| Signature réutilisable | Outil `D` → « Créer une signature » (ou « Garder comme signature » après un dessin) ; ensuite un clic sur la signature puis sur la page, ou clic droit → « Signer ici » |
-| Remplir un formulaire | Cliquer dans un champ (fond bleuté) et taper ; `Tab` passe au champ suivant, `Entrée` valide ; cases à cocher, boutons radio et listes se remplissent d'un clic |
-| Surligner | Outil `H` |
-| Masquer une zone (cache blanc) | Outil `W` |
-| Effacer tout le contenu d'une zone | Outil `E` (gomme) |
-| Pages : pivoter, dupliquer, supprimer, réordonner, page blanche | Miniatures à gauche (survol + glisser-déposer) ; `Ctrl`/`Maj`+clic pour en sélectionner plusieurs et agir sur toutes |
-| Aller à une page | Numéro de page en haut, `PageUp` / `PageDown`, flèches sur les miniatures |
-| Zoom | Menu du pourcentage (50 % à 400 %, largeur, page entière), `Ctrl`+molette, `Ctrl+0` / `Ctrl+9` |
-| Fusionner un autre PDF ou une image | « Insérer un PDF / une image » ou glisser le fichier sur une miniature |
-| Annuler / Rétablir | `Ctrl+Z` / `Ctrl+Y` (80 niveaux, instantané même sur un gros PDF), ou « Annuler » dans la notification |
-| Enregistrer | `Ctrl+S` ou « Enregistrer » (choix de l'emplacement dans Chrome/Edge) ; un point ● à côté du nom signale des modifications non enregistrées, et l'application demande confirmation avant d'ouvrir un autre document |
-| Exporter une partie ou réduire la taille | Flèche à côté d'« Enregistrer » (`Ctrl+Maj+S`) : pages choisies, images recompressées pour l'e-mail ; « Extraire » sur des miniatures sélectionnées |
-| Tout au clavier | `Tab` / `Maj+Tab` parcourt les éléments de la page, `Entrée` modifie, flèches pour déplacer, `Maj+F10` (ou touche Menu) ouvre le menu de l'élément |
-| Petit écran, tablette | Sous ~900 px les réglages, sous ~700 px les miniatures, se replient derrière deux boutons en haut ; au doigt, un élément sélectionné se déplace |
-| Aide | `?` ou le bouton ⓘ — et la barre du bas indique toujours ce que l'on peut faire avec l'élément survolé |
-
-La suppression est **réelle** (le contenu est retiré du fichier, pas seulement caché), sauf pour l'outil « cache blanc ».
-
-Le PDF enregistré est compact : les polices ajoutées sont réduites aux seuls caractères utilisés.
-
-## Sécurité
-
-Le serveur n'écoute que sur l'ordinateur (127.0.0.1). Chaque lancement crée un jeton secret connu de la seule
-page de l'application : un autre site ouvert dans le navigateur ne peut ni lire ni modifier vos documents.
-
-## Reconnaissance de texte (OCR)
-
-Elle utilise le moteur OCR **intégré à Windows 10/11** (rien n'est envoyé sur Internet) et la langue
-d'affichage de Windows. Une page dure moins d'une seconde. Les pages couchées ou à l'envers sont redressées
-automatiquement. Après l'OCR, modifier une ligne recouvre l'ancienne de la couleur du fond et réécrit le
-texte dans la couleur détectée.
-
-## Limites connues
-
-- Le texte écrit de droite à gauche (hébreu, arabe) ne peut pas encore être réécrit : l'application le signale et
-  laisse la ligne telle quelle. Le chinois, le japonais, le coréen et les symboles utilisent automatiquement une
-  police de Windows qui les contient.
-- Un texte modifié réutilise la police d'origine si elle est intégrée au PDF et contient les caractères nécessaires ;
-  sinon une police proche (Helvetica/Times/Courier ou Arial…) est utilisée.
-- Quand un paragraphe est réécrit, il prend un style unique (celui de sa ligne principale) : un mot en gras au
-  milieu redevient normal. Pour garder ces styles, utilisez « Rechercher / remplacer » ou modifiez la ligne seule.
-- L'OCR peut se tromper sur des caractères rares ou des scans de mauvaise qualité ; il ne lit pas le texte
-  incliné en biais dans une image.
+- `app.py` : serveur local (Flask) et moteur d'édition (PyMuPDF) ; `static/` : l'interface ;
+  `desktop.py` : la fenêtre Windows (pywebview / Edge WebView2) ; `build_exe.py` : l'exécutable (PyInstaller).
+- `build_exe.py` prépare tout seul un environnement Python propre dans `build/` (Internet nécessaire la
+  première fois), pour que l'application n'embarque que le nécessaire.
+- PyMuPDF est figé à la version testée dans `requirements.txt` : l'historique d'annulation utilise certaines
+  de ses fonctions internes.
+- Sécurité : le serveur n'écoute que sur l'ordinateur (127.0.0.1) et exige un jeton propre à chaque lancement,
+  connu de la seule page de l'application ; un autre site ouvert dans le navigateur ne peut pas l'utiliser.
 
 ## Licence
 
