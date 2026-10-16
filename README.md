@@ -3,17 +3,35 @@
 Éditeur de PDF local avec interface web : supprimer, modifier, déplacer et ajouter des éléments en quelques clics.
 Tout se passe sur votre machine, aucun fichier n'est envoyé sur Internet.
 
-## Lancer
+## Application Windows (.exe)
+
+Le plus simple : l'application s'ouvre dans sa propre fenêtre, sans navigateur ni Python à installer.
+
+- **Prérequis** : Windows 10 ou 11 (le moteur d'affichage Edge WebView2 y est déjà présent).
+- **Construire** : `python build_exe.py` crée `dist/PDF Changer/PDF Changer.exe` et une archive
+  `dist/PDF Changer (Windows).zip` (~45 Mo) à copier sur un autre PC. Le script prépare tout seul un
+  environnement Python propre dans `build/` (Internet nécessaire la première fois).
+- **Utiliser** : décompresser l'archive où l'on veut, lancer `PDF Changer.exe`. Pour ouvrir les PDF par
+  double-clic : clic droit sur un PDF › Ouvrir avec › Choisir une autre application › `PDF Changer.exe`.
+- « Enregistrer » ouvre la boîte « Enregistrer sous » de Windows ; la fenêtre demande confirmation si l'on
+  ferme avec des modifications non enregistrées. Signatures et réglages sont gardés dans
+  `%LOCALAPPDATA%\PDF Changer`, avec un journal (`journal.txt`) en cas de problème.
+- L'exécutable n'est pas signé : au premier lancement, Windows SmartScreen peut afficher « Windows a protégé
+  votre ordinateur » › « Informations complémentaires » › « Exécuter quand même ».
+
+## Lancer depuis les sources
 
 Double-cliquez sur **`Lancer PDF Changer.bat`** (les dépendances s'installent toutes seules au premier lancement),
 ou bien :
 
 ```
 pip install -r requirements.txt
-python app.py
+python app.py          # dans le navigateur (http://127.0.0.1:5173 par défaut)
+python desktop.py      # dans une fenêtre (pip install pywebview)
 ```
 
-Le navigateur s'ouvre sur l'application (http://127.0.0.1:5173 par défaut).
+Prérequis : Windows 10/11, Python 3.10 ou plus récent ; Chrome ou Edge conseillés (vraie boîte
+« Enregistrer sous »). PyMuPDF est figé à la version testée (`requirements.txt`).
 
 ## Ce qu'on peut faire
 

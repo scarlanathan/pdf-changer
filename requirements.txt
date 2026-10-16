@@ -1,5 +1,6 @@
-PyMuPDF>=1.24.10
-Flask>=3.0
+# version figée : l'historique d'annulation utilise des fonctions internes testées avec celle-ci
+PyMuPDF==1.27.2.2
+Flask>=3.0,<4
 numpy
 # Reconnaissance de texte (OCR) via le moteur integre a Windows 10/11
 winrt-runtime; sys_platform == "win32"

@@ -372,7 +372,10 @@ function updateTopbar() {
   updatePageNav();
   const dn = $('#docName');
   dn.classList.toggle('dirty', isDirty());
-  dn.title = isDirty() ? 'Modifications non enregistrées — Ctrl+S pour télécharger' : 'Toutes les modifications sont enregistrées';
+  dn.title = isDirty() ? 'Modifications non enregistrées — Ctrl+S pour enregistrer' : 'Toutes les modifications sont enregistrées';
+  // la fenêtre de bureau demande confirmation à la fermeture s'il reste des modifications
+  const api = desktopApi();
+  if (api && api.set_dirty && updateTopbar.dirty !== isDirty()) { updateTopbar.dirty = isDirty(); api.set_dirty(isDirty()); }
 }
 
 // File d'attente : les opérations s'exécutent une par une
@@ -432,6 +435,8 @@ async function download(opts = {}) {
   downloading = true;
   try { return await doDownload(opts); } finally { downloading = false; }
 }
+// Fonctions de la fenêtre de bureau (pywebview), absentes dans un navigateur
+const desktopApi = () => (window.pywebview && window.pywebview.api && window.pywebview.api.save_pdf ? window.pywebview.api : null);
 async function doDownload(opts) {
   flushPending();
   await queue;
@@ -447,6 +452,28 @@ async function doDownload(opts) {
     S.savedVersion = version; updateTopbar();
     try { sessionStorage.setItem('pdfchanger.saved.' + S.sid, String(version)); } catch (e) { /* ignore */ }
   };
+  // application de bureau : boîte « Enregistrer sous » de Windows (desktop.py)
+  const api = desktopApi();
+  if (api) {
+    busy(true);
+    let t = null;
+    try {
+      const pending = api.save_pdf(S.sid, q.toString(), name);
+      t = setTimeout(() => { t = toast('Préparation du PDF…', 'info', 60000); }, 600);
+      const r = await pending;
+      if (!r || r.cancelled) return false;
+      if (r.error) throw new Error(r.error);
+      saved();
+      toast(`Enregistré : ${r.name} (${fmtSize(r.size)})`, 'ok', 4000);
+      return true;
+    } catch (e) {
+      toast('Enregistrement impossible : ' + e.message, 'error', 6000);
+      return false;
+    } finally {
+      if (typeof t === 'number') clearTimeout(t); else dismissToast(t);
+      busy(false);
+    }
+  }
   let handle = null;
   if (window.showSaveFilePicker) {
     try {
@@ -3043,8 +3070,11 @@ $('#pageNext').onclick = () => gotoPage(S.current + 1);
 window.addEventListener('resize', () => { clearTimeout(window._rz); window._rz = setTimeout(() => { if (S.sid) buildThumbs(); }, 200); });
 window.addEventListener('beforeunload', e => {
   if (pendingInk) commitInk();
-  if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
+  // dans la fenêtre de bureau, c'est elle qui demande confirmation (desktop.py)
+  if (isDirty() && !desktopApi()) { e.preventDefault(); e.returnValue = ''; }
 });
+// fenêtre de bureau prête : on lui transmet l'état « modifié » actuel
+window.addEventListener('pywebviewready', () => { updateTopbar.dirty = undefined; if (S.sid) updateTopbar(); });
 
 // ------------------------------------------------------------------ démarrage
 (async function init() {
@@ -3056,8 +3086,10 @@ window.addEventListener('beforeunload', e => {
   try { S.fonts = await apiJson('/api/fonts'); } catch (e) { S.fonts = [{ key: 'helv', label: 'Helvetica', css: 'Arial, sans-serif' }]; }
   if (!S.fonts.some(f => f.key === S.props.font)) S.props.font = 'helv';
   // reprend le document en cours après un rafraîchissement de la page
-  let sid = null;
-  try { sid = localStorage.getItem('pdfchanger.sid'); } catch (e) { /* ignore */ }
+  // ?sid=… : document ouvert par l'application de bureau (fichier passé au lancement)
+  let sid = new URLSearchParams(location.search).get('sid');
+  if (sid) history.replaceState(null, '', location.pathname);
+  else try { sid = localStorage.getItem('pdfchanger.sid'); } catch (e) { /* ignore */ }
   if (sid) {
     try { loadInfo(await apiJson(`/api/doc/${sid}/info`), true); } catch (e) { try { localStorage.removeItem('pdfchanger.sid'); } catch (_) { /* ignore */ } }
   }

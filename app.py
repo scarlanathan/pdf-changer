@@ -23,7 +23,8 @@ import webbrowser
 import fitz  # PyMuPDF
 from flask import Flask, Response, abort, jsonify, request, send_file
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+# dans l'application emballée (PyInstaller), les fichiers sont dans sys._MEIPASS
+BASE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")
 
 app = Flask(__name__, static_folder=STATIC, static_url_path="/static")
