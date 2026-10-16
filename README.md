@@ -96,3 +96,14 @@ texte dans la couleur détectée.
   milieu redevient normal. Pour garder ces styles, utilisez « Rechercher / remplacer » ou modifiez la ligne seule.
 - L'OCR peut se tromper sur des caractères rares ou des scans de mauvaise qualité ; il ne lit pas le texte
   incliné en biais dans une image.
+
+## Licence
+
+Copyright (C) 2026 Nathan Han
+
+Ce programme est un logiciel libre, distribué sous la licence **GNU Affero General Public License v3.0**
+(voir le fichier [`LICENSE`](LICENSE)) : vous pouvez l'utiliser, l'étudier, le modifier et le redistribuer,
+à condition de partager vos modifications sous la même licence — y compris si vous le proposez comme
+service en ligne. Il est fourni sans aucune garantie.
+
+PDF Changer s'appuie sur [PyMuPDF](https://github.com/pymupdf/PyMuPDF), lui-même sous licence AGPL-3.0.
