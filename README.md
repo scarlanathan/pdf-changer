@@ -47,6 +47,8 @@ Le navigateur s'ouvre sur l'application (http://127.0.0.1:5173 par défaut).
 | Annuler / Rétablir | `Ctrl+Z` / `Ctrl+Y` (80 niveaux, instantané même sur un gros PDF), ou « Annuler » dans la notification |
 | Enregistrer | `Ctrl+S` ou « Enregistrer » (choix de l'emplacement dans Chrome/Edge) ; un point ● à côté du nom signale des modifications non enregistrées, et l'application demande confirmation avant d'ouvrir un autre document |
 | Exporter une partie ou réduire la taille | Flèche à côté d'« Enregistrer » (`Ctrl+Maj+S`) : pages choisies, images recompressées pour l'e-mail ; « Extraire » sur des miniatures sélectionnées |
+| Tout au clavier | `Tab` / `Maj+Tab` parcourt les éléments de la page, `Entrée` modifie, flèches pour déplacer, `Maj+F10` (ou touche Menu) ouvre le menu de l'élément |
+| Petit écran, tablette | Sous ~900 px les réglages, sous ~700 px les miniatures, se replient derrière deux boutons en haut ; au doigt, un élément sélectionné se déplace |
 | Aide | `?` ou le bouton ⓘ — et la barre du bas indique toujours ce que l'on peut faire avec l'élément survolé |
 
 La suppression est **réelle** (le contenu est retiré du fichier, pas seulement caché), sauf pour l'outil « cache blanc ».

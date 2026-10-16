@@ -5,6 +5,7 @@ et sert l'interface située dans ./static.  Tout reste sur la machine.
 """
 
 import base64
+import contextlib
 import difflib
 import hashlib
 import io
@@ -32,6 +33,7 @@ MAX_HISTORY = 80
 MAX_SESSIONS = 8          # documents ouverts gardés en mémoire (les plus anciens sont fermés)
 SESSION_IDLE = 12 * 3600  # un document inutilisé depuis 12 h est fermé
 MAX_PATHS = 1500  # au-delà, les tracés vectoriels sont regroupés
+CACHE_PAGES = 60  # pages dont l'analyse reste en mémoire
 MAX_RENDER_PX = 24e6      # plafond de pixels d'un rendu de page
 MAX_IMAGE_PX = 100e6      # image insérée : au-delà, refusée (bombe de décompression)
 SESSIONS = {}
@@ -54,6 +56,46 @@ R_TXT_NONE = fitz.PDF_REDACT_TEXT_NONE
 
 class OpError(Exception):
     pass
+
+
+COORD_MAX = 14400.0  # 200 pouces : la plus grande page admise par le format PDF
+
+
+def num(v, lo=-COORD_MAX, hi=COORD_MAX, default=None, what="valeur"):
+    """Nombre fini et borné venu du client (NaN, infini ou absurde : refusé)."""
+    if v is None or v == "":
+        if default is None:
+            raise OpError("Valeur manquante : %s." % what)
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise OpError("Valeur invalide : %s." % what)
+    if not math.isfinite(f):
+        raise OpError("Valeur invalide : %s." % what)
+    return min(max(f, lo), hi)
+
+
+def nums(v, n, what="coordonnées"):
+    if not isinstance(v, (list, tuple)) or len(v) != n:
+        raise OpError("Valeur invalide : %s." % what)
+    return [num(x, what=what) for x in v]
+
+
+@contextlib.contextmanager
+def unrotated(page):
+    """Le temps de dessiner, la page est remise à l'endroit : les coordonnées
+    natives sont alors exactes même si la page est pivotée ET rognée (CropBox ou
+    MediaBox décalées), cas où le dessin direct atterrissait au mauvais endroit.
+    Donne la rotation d'origine (pour redresser les images)."""
+    r0 = page.rotation
+    if r0:
+        page.set_rotation(0)
+    try:
+        yield r0
+    finally:
+        if r0:
+            page.set_rotation(r0)
 
 
 # --------------------------------------------------------------------------
@@ -197,7 +239,7 @@ def embed_font(sess, page, name, **source):
     key = (page.number, name)
     if sess is not None and key in sess.registered:
         return
-    xref = sess.font_xrefs.get(name) if sess is not None else None
+    xref = (sess.font_xrefs.get(name) or sess.find_font(name)) if sess is not None else None
     if not (xref and add_font_ref(page, name, xref)):
         page.insert_font(fontname=name, **source)
         if sess is not None:
@@ -219,7 +261,9 @@ def add_font_ref(page, name, xref):
         if kind == "xref":
             target, path = int(val.split()[0]), ""
         elif kind != "dict":
-            doc.xref_set_key(target, path, "<<>>")
+            # ressources héritées d'un nœud /Pages : en créer ici les masquerait
+            # (polices et images d'origine perdues) ; PyMuPDF sait gérer ce cas
+            return False
         fpath = (path + "/" if path else "") + "Font"
         kind, val = doc.xref_get_key(target, fpath)
         if kind == "xref":
@@ -270,6 +314,7 @@ def write_increment(doc, stream_len):
             getattr(pymupdf, helper)(pdf)
     opts = mupdf.PdfWriteOptions()
     opts.do_incremental = 1
+    opts.do_compress = 1  # contenus de page compressés : historique ~8 fois plus léger
     opts.do_encrypt = mupdf.PDF_ENCRYPT_KEEP
     buf = mupdf.fz_new_buffer(stream_len + 65536)
     out = mupdf.FzOutput(buf)
@@ -289,6 +334,15 @@ def allow_increment(doc):
     try:
         from pymupdf import _as_pdf_document
         _as_pdf_document(doc).m_internal.redacted = 0
+    except Exception:
+        pass
+
+
+def release_memory():
+    """Rend au système la mémoire du cache de MuPDF (images décodées…), qui
+    sinon garde des centaines de Mo même après la fermeture des documents."""
+    try:
+        fitz.TOOLS.store_shrink(100)
     except Exception:
         pass
 
@@ -324,13 +378,15 @@ class Session:
         self.font_xrefs = {}
         self.registered = set()
         self.doc = None
+        self.geom = None
+        self.closed = False
         self._open(self.history[0])
         self.last_used = time.time()
 
     def _open(self, entry, keep_fonts=False):
         """Ouvre l'étape `entry` (keep_fonts : même état, polices toujours valables)."""
         old = self.doc
-        self.stream = bytes(entry["buf"][:entry["size"]])
+        self.stream = bytes(memoryview(entry["buf"])[:entry["size"]])  # une seule copie
         self.doc = fitz.open("pdf", self.stream)
         if old is not None:
             try:
@@ -341,8 +397,19 @@ class Session:
             self.registered.clear()
             self.font_xrefs.clear()
 
+    def find_font(self, name):
+        """Police déjà embarquée sous ce nom (après une annulation, le registre est
+        vidé : sans cette recherche elle serait embarquée une seconde fois)."""
+        for page in self.doc.pages(0, min(self.doc.page_count, 3000)):
+            for f in page.get_fonts():
+                if f[4] == name:
+                    self.font_xrefs[name] = f[0]
+                    return f[0]
+        return None
+
     def invalidate(self, changed):
         if changed is None:
+            self.geom = None
             self.cache.clear()
             self.tcache.clear()
             self.font_buffers.clear()
@@ -365,8 +432,8 @@ class Session:
     def commit(self, changed, amend=False):
         """Valide l'état du document comme nouvelle étape.  amend : remplace la
         dernière étape (ex. OCR page par page = une seule annulation)."""
-        pages = range(self.doc.page_count) if changed is None else changed
-        fix_tounicode(self.doc, pages)
+        if changed is not None:  # les opérations de pages n'ajoutent pas de police
+            fix_tounicode(self.doc, changed)
         allow_increment(self.doc)
         cur = self.history[self.pos]
         tail = None
@@ -393,8 +460,9 @@ class Session:
         if len(self.history) > MAX_HISTORY:
             self.history.pop(0)
         self.pos = len(self.history) - 1
-        # rouvert sur le tampon complet : le prochain ajout se placera à la suite
-        self._open(entry, keep_fonts=keep)
+        # rouvert sur le tampon complet : le prochain ajout se placera à la suite.
+        # Pages réordonnées : les clés (page, police) du registre ne valent plus.
+        self._open(entry, keep_fonts=keep and changed is not None)
         self.invalidate(changed)
         self.version += 1
 
@@ -426,18 +494,26 @@ class Session:
         return changed
 
     def close(self):
+        self.closed = True
         try:
             self.doc.close()
         except Exception:
             pass
         self.history = []
         self.data = bytearray()
+        self.stream = b""
+        self.cache.clear()
+        self.tcache.clear()
+        self.font_objs.clear()
+        release_memory()
 
     def info(self):
-        pages = []
-        for page in self.doc:
-            r = page.rect
-            pages.append({"w": round(r.width, 3), "h": round(r.height, 3), "rot": page.rotation})
+        if self.geom is None:  # recalculé seulement quand la structure change
+            self.geom = []
+            for page in self.doc:
+                r = page.rect
+                self.geom.append({"w": round(r.width, 3), "h": round(r.height, 3), "rot": page.rotation})
+        pages = self.geom
         return {
             "sid": self.id,
             "name": self.name,
@@ -499,7 +575,7 @@ class Session:
 
 def get_session(sid):
     s = SESSIONS.get(sid)
-    if not s:
+    if not s or s.closed:
         abort(404, "Document introuvable : il a été fermé (serveur redémarré ou trop de documents ouverts).")
     s.last_used = time.time()
     return s
@@ -518,6 +594,8 @@ def new_session(data, name):
             v = SESSIONS.pop(k)
             with v.lock:
                 v.close()
+        if old:
+            release_memory()
         SESSIONS[s.id] = s
     return s
 
@@ -594,13 +672,41 @@ def to_pdf_bytes(data, filename, password=None):
     if doc.needs_pass:
         if not password or not doc.authenticate(password):
             raise OpError("PASSWORD")
-    if not doc.is_pdf:
-        pdf = doc.convert_to_pdf()
+    try:
+        if not doc.is_pdf:
+            check_image_size(data)
+            pdf = doc.convert_to_pdf()
+            doc.close()
+            doc = fitz.open("pdf", pdf)
+        if doc.page_count < 1:
+            raise OpError("Ce PDF ne contient aucune page.")
+        for page in doc:  # arbre des pages en boucle, page illisible…
+            page.rect
+        out = doc.tobytes(encryption=fitz.PDF_ENCRYPT_NONE, garbage=1)
+    except OpError:
+        raise
+    except Exception:
+        raise OpError("Ce PDF est endommagé et ne peut pas être ouvert.")
+    finally:
         doc.close()
-        doc = fitz.open("pdf", pdf)
-    out = doc.tobytes(encryption=fitz.PDF_ENCRYPT_NONE, garbage=1)
-    doc.close()
     return out
+
+
+def image_dims(data):
+    """(largeur, hauteur) d'une image sans la décoder (image_profile ne marche
+    plus avec PyMuPDF 1.27)."""
+    try:
+        from pymupdf import mupdf
+        img = mupdf.fz_new_image_from_buffer(mupdf.fz_new_buffer_from_copied_data(data))
+        return img.w(), img.h()
+    except Exception:
+        return 0, 0
+
+
+def check_image_size(data):
+    w, h = image_dims(data)
+    if w * h > MAX_IMAGE_PX:
+        raise OpError("Image trop grande (%d × %d pixels) : réduisez-la avant de l'insérer." % (w, h))
 
 
 # --------------------------------------------------------------------------
@@ -609,6 +715,8 @@ def to_pdf_bytes(data, filename, password=None):
 
 
 def disp_rect(page, r):
+    if not page.rotation:  # cas courant : rien à transformer
+        return fitz.Rect(r)
     return fitz.Rect(r) * page.rotation_matrix
 
 
@@ -725,9 +833,10 @@ def extract(sess, pno):
             el["para"] = info["id"]
         paras.append(info)
 
-    # Images
+    # Images (sans les décoder : xrefs=True calcule une empreinte des pixels,
+    # ~40 ms par page scannée, et un PDF piégé y épuiserait la mémoire)
     try:
-        infos = page.get_image_info(xrefs=True)
+        infos = page.get_image_info(hashes=False, xrefs=False)
     except Exception:
         infos = []
     for i, info in enumerate(infos):
@@ -780,6 +889,8 @@ def extract(sess, pno):
               "paras_by_id": {p["id"]: p for p in paras}, "scan": scan,
               "ocr": any(e["ocr"] for e in lines)}
     sess.cache[pno] = result
+    while len(sess.cache) > CACHE_PAGES:  # les pages lues le plus anciennement sont oubliées
+        sess.cache.pop(next(iter(sess.cache)))
     return result
 
 
@@ -811,6 +922,8 @@ def text_lines(sess, pno):
         return [e for e in sess.cache[pno]["els"] if e["type"] == "text"]
     if pno not in sess.tcache:
         sess.tcache[pno] = read_lines(sess.doc[pno])
+        while len(sess.tcache) > 4 * CACHE_PAGES:
+            sess.tcache.pop(next(iter(sess.tcache)))
     return sess.tcache[pno]
 
 
@@ -853,7 +966,8 @@ def widget_info(w):
           "value": value if isinstance(value, (bool, str, int, float)) else (value or ""),
           "readonly": bool(flags & 1), "tooltip": w.field_label or ""}
     if kind in ("combo", "list"):
-        el["choices"] = [c if isinstance(c, str) else (c[1] if len(c) > 1 else c[0]) for c in (w.choice_values or [])]
+        # choix : [valeur enregistrée, libellé affiché]
+        el["choices"] = [[c, c] if isinstance(c, str) else [c[0], c[-1]] for c in (w.choice_values or [])]
     if kind == "text":
         el["multiline"] = bool(flags & 4096)
         el["maxlen"] = w.text_maxlen or 0
@@ -879,6 +993,9 @@ def text_line(page, direction, spans, text):
         bb = fitz.Rect(s["bbox"])
         proj += [dot(c, dv) for c in (bb.tl, bb.tr, bb.bl, bb.br)]
     # direction et origine telles qu'affichées (page pivotée)
+    lead = len(spans[0]["text"]) - len(spans[0]["text"].lstrip())
+    if lead:  # l'origine est celle des espaces de tête : on la place sur le premier caractère
+        origin = origin + dv * (lead * 0.278 * spans[0]["size"])
     m = page.rotation_matrix
     ddir = fitz.Point(dv) * m - fitz.Point(0, 0) * m
     dorg = origin * m
@@ -929,6 +1046,7 @@ def merge_fragments(page, raw):
                     merged[-1] = (min(first_i, i), parts)
                     continue
             merged.append((i, [b]))
+    merged = join_justified(raw, merged)
     out = []
     for first_i, parts in sorted(merged, key=lambda m: m[0]):
         if len(parts) == 1:
@@ -957,6 +1075,40 @@ class LineGroup(list):
         self.u0 = ln["_u0"] if len(self) == 1 else min(self.u0, ln["_u0"])
         self.u1 = max(self.u1, ln["_u1"])
         self.append(ln)
+
+
+def join_justified(raw, merged):
+    """Ligne justifiée très étirée : ses mots restent en morceaux séparés par de
+    grands blancs (et la réécriture du paragraphe les perdait).  On les réunit
+    quand les écarts sont réguliers et qu'une ligne voisine, d'un seul tenant,
+    couvre la même largeur (ce n'est donc pas un tableau)."""
+    singles = [parts[0] for _, parts in merged if len(parts) == 1]
+    rows = {}
+    for idx, (first_i, parts) in enumerate(merged):
+        p0 = parts[0]
+        rows.setdefault((round(p0["_angle"]), round(p0["_v"] / max(p0["size"] * 0.2, 0.5))), []).append(idx)
+    drop, out = set(), list(merged)
+    for key, idxs in rows.items():
+        if len(idxs) < 3:
+            continue
+        frags = sorted((merged[i] for i in idxs), key=lambda m: m[1][0]["_u0"])
+        s = max(f[1][0]["size"] for f in frags)
+        if any(abs(f[1][0]["size"] - s) > 0.06 * s or f[1][0]["ocr"] for f in frags):
+            continue
+        gaps = [b[1][0]["_u0"] - a[1][-1]["_u1"] for a, b in zip(frags, frags[1:])]
+        if not gaps or min(gaps) <= 0 or max(gaps) > 3 * s or max(gaps) > 1.8 * min(gaps):
+            continue
+        u0, u1 = frags[0][1][0]["_u0"], frags[-1][1][-1]["_u1"]
+        v = frags[0][1][0]["_v"]
+        if not any(0.85 * s <= abs(o["_v"] - v) <= 2.2 * s and abs(o["_u0"] - u0) < s and abs(o["_u1"] - u1) < 1.5 * s
+                   and angle_diff(o["_angle"], frags[0][1][0]["_angle"]) < 1 for o in singles):
+            continue
+        parts = [p for f in frags for p in f[1]]
+        first = min(f[0] for f in frags)
+        for i in idxs:
+            drop.add(i)
+        out.append((first, parts))
+    return [m for i, m in enumerate(out) if i not in drop]
 
 
 def line_joins(grp, b):
@@ -1116,12 +1268,13 @@ def text_redact_area(el):
 
 class PagePixels:
     """Rendu de la page (orientation affichée) pour lire les couleurs d'un scan."""
-    SCALE = 2.0
 
     def __init__(self, page):
         import numpy as np
         self.np = np
         self.page = page
+        r = page.rect
+        self.SCALE = min(2.0, math.sqrt(MAX_RENDER_PX / max(r.width * r.height, 1)))
         pix = page.get_pixmap(matrix=fitz.Matrix(self.SCALE, self.SCALE), alpha=False,
                               colorspace=fitz.csRGB)
         self.arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
@@ -1161,15 +1314,21 @@ class PagePixels:
 
 def cover(page, native, color, pad=0.8):
     """Peint un rectangle de la couleur du fond (efface les pixels d'un scan)."""
-    shape = page.new_shape()
-    shape.draw_rect(fitz.Rect(native) + (-pad, -pad, pad, pad))
-    shape.finish(color=None, fill=color, width=0)
-    shape.commit()
+    with unrotated(page):
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(native) + (-pad, -pad, pad, pad))
+        shape.finish(color=None, fill=color, width=0)
+        shape.commit()
 
 
 def redraw_paths(page, paths, m=None):
     if not paths:
         return
+    with unrotated(page):
+        _redraw_paths(page, paths, m)
+
+
+def _redraw_paths(page, paths, m=None):
     m = m or (lambda p: fitz.Point(p))
     shape = page.new_shape()
     for p in paths:
@@ -1235,11 +1394,6 @@ def cluster_paths(paths, cell=12.0):
     return out
 
 
-def paths_in(paths, rect):
-    zone = fitz.Rect(rect) + (-1, -1, 1, 1)
-    return [p for p in paths if zone.contains(p["rect"])]
-
-
 def link_key(ln):
     r = fitz.Rect(ln["from"])
     return (ln.get("kind"), round(r.x0), round(r.y0), round(r.x1), round(r.y1),
@@ -1270,6 +1424,38 @@ def apply_redact(page, rects, images=R_IMG_NONE, graphics=R_ART_NONE, text=R_TXT
     restore_links(page, links)
 
 
+def redact_areas(sess, page, texts):
+    """Zones à effacer pour ces lignes.  Les lignes d'un même paragraphe sont
+    réunies en un seul rectangle quand aucune autre ligne ne s'y trouve : MuPDF
+    traite un paragraphe de 1000 lignes en 0,1 s au lieu de 35 s."""
+    areas = [text_redact_area(e) for e in texts]
+    if len(texts) < 6:
+        return areas
+    try:
+        lines = [e for e in extract(sess, page.number)["els"] if e["type"] == "text"]
+    except Exception:
+        return areas
+    ids = {e["id"] for e in texts}
+    others = [text_redact_rect(e["native"]) for e in lines if e["id"] not in ids]
+    groups = {}
+    for e, ar in zip(texts, areas):
+        key = e.get("para") if isinstance(ar, fitz.Rect) else None
+        groups.setdefault(key, []).append(ar)
+    out = []
+    for key, rects in groups.items():
+        if key is None or len(rects) < 3:
+            out += rects
+            continue
+        u = fitz.Rect(rects[0])
+        for r in rects[1:]:
+            u |= r
+        if any(o.intersects(u) for o in others):
+            out += rects
+        else:
+            out.append(u)
+    return out
+
+
 def remove_elements(sess, page, targets):
     """Supprime réellement les éléments ciblés du contenu de la page."""
     pno = page.number
@@ -1294,7 +1480,7 @@ def remove_elements(sess, page, targets):
         if scanned:
             px = PagePixels(page)
             bgs = [(e["native"], px.colors(e["native"])[0], 1 + 0.12 * e["size"]) for e in scanned]
-        apply_redact(page, [text_redact_area(e) for e in texts], text=R_TXT_REMOVE)
+        apply_redact(page, redact_areas(sess, page, texts), text=R_TXT_REMOVE)
         for r, bg, pad in bgs:
             cover(page, r, bg, pad)
 
@@ -1345,23 +1531,39 @@ def image_rotation(tf):
     return 90 if b < 0 else 270
 
 
+def image_xref(page, el):
+    """xref d'une image de la page (calcul coûteux : fait au déplacement seulement,
+    et jamais sur une image géante)."""
+    try:
+        if any((x[2] or 0) * (x[3] or 0) > MAX_IMAGE_PX for x in page.get_images(full=True)):
+            return 0
+        best, score = 0, 0.8
+        for info in page.get_image_info(xrefs=True):
+            sc = iou(info["bbox"], el["native"])
+            if sc > score and info.get("xref"):
+                best, score = info["xref"], sc
+        return best
+    except Exception:
+        return 0
+
+
 def capture(sess, page, el):
     """Mémorise ce qu'il faut pour redessiner un élément ailleurs."""
     if el["type"] == "text":
         cap = {"spans": el["_spans"], "rot": el["_rot"], "angle": el["_angle"], "ocr": el.get("ocr"),
-               "src": page}
+               "src": page, "src_rot": page.rotation, "src_rm": page.rotation_matrix}
         if el.get("ocr"):
             cap["pixmap"] = PagePixels(page).crop(el["native"])
         return cap
     if el["type"] == "image":
-        xref = el.get("xref") or 0
+        xref = el.get("xref") or image_xref(page, el)
         rot = image_rotation(el.get("_tf"))
         if xref:
-            return {"xref": xref, "rotate": rot}
-        pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=el["native"])
-        return {"pixmap": pix, "rotate": page.rotation}
+            return {"xref": xref, "rotate": rot, "src_rot": page.rotation, "src_rm": page.rotation_matrix}
+        pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=disp_rect(page, el["native"]))
+        return {"pixmap": pix, "rotate": page.rotation, "src_rot": page.rotation, "src_rm": page.rotation_matrix}
     if el["type"] == "drawing":
-        return {"paths": el["_paths"]}
+        return {"paths": el["_paths"], "src_rot": page.rotation, "src_rm": page.rotation_matrix}
     return {}
 
 
@@ -1370,27 +1572,34 @@ def reinsert(sess, page, el, cap, new_native):
     une autre page que celle d'origine)."""
     old = el["native"]
     m, sx, sy = mapper(old, new_native)
+    # vers une page d'une autre rotation : on garde l'orientation affichée
+    turn = (page.rotation - cap.get("src_rot", page.rotation)) % 360
+    if turn:
+        src_rm = cap["src_rm"]
+        md, sx, sy = mapper(fitz.Rect(old) * src_rm, fitz.Rect(new_native) * page.rotation_matrix)
+
+        def m(p):
+            return md(fitz.Point(p) * src_rm) * page.derotation_matrix
     if el["type"] == "text":
-        scale = sy if cap["rot"] in (0, 180) else sx
+        scale = (sy if cap["rot"] in (0, 180) else sx) if not turn else math.sqrt(abs(sx * sy))
         if cap.get("ocr"):
             # scan : on déplace les pixels, et la couche de texte invisible avec
-            page.insert_image(new_native, pixmap=cap["pixmap"], keep_proportion=False, rotate=page.rotation)
+            with unrotated(page) as r0:
+                page.insert_image(new_native, pixmap=cap["pixmap"], keep_proportion=False, rotate=r0)
         src = cap.get("src")
         sh = page.new_shape()
         for s in cap["spans"]:
             fname = sess.font_for_span(page, s, s["text"], src)
             put_line(sh, m(s["origin"]), s["text"], s["size"] * scale, fname, rgb(s["color"]),
-                     cap["angle"], invisible=bool(cap.get("ocr")))
+                     (cap["angle"] + turn) % 360, invisible=bool(cap.get("ocr")))
         sh.commit()
     elif el["type"] == "image":
-        src_doc = cap.get("doc")
-        if "xref" in cap and src_doc is None:
-            page.insert_image(new_native, xref=cap["xref"], keep_proportion=False, rotate=cap["rotate"])
-        elif "xref" in cap:
-            img = src_doc.extract_image(cap["xref"])
-            page.insert_image(new_native, stream=img["image"], keep_proportion=False, rotate=cap["rotate"])
-        else:
-            page.insert_image(new_native, pixmap=cap["pixmap"], keep_proportion=False, rotate=cap["rotate"])
+        rot = (cap["rotate"] + turn) % 360
+        with unrotated(page):
+            if "xref" in cap:
+                page.insert_image(new_native, xref=cap["xref"], keep_proportion=False, rotate=rot)
+            else:
+                page.insert_image(new_native, pixmap=cap["pixmap"], keep_proportion=False, rotate=rot)
     elif el["type"] == "drawing":
         redraw_paths(page, cap["paths"], m)
 
@@ -1528,7 +1737,7 @@ def op_move(sess, a):
             dest = check_page(sess, it.get("dest", pno))
             if dest != pno and el["type"] not in ("text", "image", "drawing"):
                 continue
-            new_native = native_rect(sess.doc[dest] if dest != pno else page, it["to"])
+            new_native = native_rect(sess.doc[dest] if dest != pno else page, nums(it.get("to"), 4))
             if new_native.width < 0.5 and el["native"].width >= 0.5:
                 continue
             jobs.append((el, new_native, it["to"], dest))
@@ -1612,17 +1821,18 @@ def op_add_text(sess, a):
     text = (a.get("text") or "").replace("\r", "")
     if not text.strip():
         return {"changed": []}
-    size = float(a.get("size") or 14)
+    size = num(a.get("size"), 1, 1000, 14, "taille")
     fn = family_fontname_fn(page, a.get("font", "helv"), a.get("bold"), a.get("italic"), sess)
     width = None
     if a.get("width"):
         # largeur imposée : retour à la ligne automatique
-        width = float(a["width"])
+        width = num(a["width"], 5, COORD_MAX, what="largeur")
         rows = wrap_text(text, width, lambda t: text_width(fn(t)[1], t, size))
         text = "\n".join(r for r, _ in rows)
-    y = float(a["y"]) if "y" in a else float(a["by"]) - size * (fn("A")[1].ascender or 0.9)
-    r = write_text_block(page, float(a["x"]), y, text, size, rgb(a.get("color") or "#000"),
-                         fn, align=a.get("align", "left"), opacity=float(a.get("opacity", 1)), box_width=width)
+    y = num(a["y"], what="position") if "y" in a else num(a.get("by"), what="position") - size * (fn("A")[1].ascender or 0.9)
+    r = write_text_block(page, num(a.get("x"), what="position"), y, text, size, rgb(a.get("color") or "#000"),
+                         fn, align=a.get("align", "left"), opacity=num(a.get("opacity"), 0, 1, 1, "opacité"),
+                         box_width=width)
     return {"changed": [pno], "select": [{"page": pno, "bbox": rlist(r), "type": "text", "zone": True}]}
 
 
@@ -1727,7 +1937,7 @@ def rewrite_block(sess, page, els, text, a, para=None, removed=False, px=None):
     angle = first["_angle"]
     ocr = any(e.get("ocr") for e in els)
     base_size = para["size"] if para else s0["size"]
-    size = float(a.get("size") or base_size)
+    size = num(a.get("size"), 1, 1000, base_size, "taille")
     k = size / base_size if base_size else 1
     spacing = (para["spacing"] if para else base_size * 1.2) * k
     if ocr:
@@ -1884,9 +2094,17 @@ def find_matches(sess, rx, pages=None):
             b, n = el["bbox"], max(len(el["text"]), 1)
             rects = []
             for h in hits:
-                if angle_diff(el["angle"], 0) < 1:
-                    w = b[2] - b[0]
-                    rects.append([round(b[0] + w * h.start() / n, 2), b[1], round(b[0] + w * h.end() / n, 2), b[3]])
+                f0, f1 = h.start() / n, h.end() / n
+                w, ht = b[2] - b[0], b[3] - b[1]
+                a = el["angle"]
+                if angle_diff(a, 0) < 1:
+                    rects.append([round(b[0] + w * f0, 2), b[1], round(b[0] + w * f1, 2), b[3]])
+                elif angle_diff(a, 180) < 1:
+                    rects.append([round(b[2] - w * f1, 2), b[1], round(b[2] - w * f0, 2), b[3]])
+                elif angle_diff(a, 270) < 1:  # texte qui descend
+                    rects.append([b[0], round(b[1] + ht * f0, 2), b[2], round(b[1] + ht * f1, 2)])
+                elif angle_diff(a, 90) < 1:  # texte qui monte
+                    rects.append([b[0], round(b[3] - ht * f1, 2), b[2], round(b[3] - ht * f0, 2)])
                 else:
                     rects.append(b)
             out.append({"page": pno, "id": el["id"], "bbox": b, "text": el["text"], "count": len(hits),
@@ -1950,7 +2168,7 @@ def op_replace(sess, a):
         return {"changed": []}
     rx = search_regex(query, a.get("case"), a.get("whole"))
     repl = (a.get("replacement") or "").replace("\r", "").replace("\n", " ")
-    only = {(check_page(sess, t.get("page")), t.get("id")) for t in a["targets"]} if a.get("targets") else None
+    only = {(check_page(sess, t.get("page")), t.get("id")) for t in a["targets"]} if "targets" in a else None
     pages = sorted({p for p, _ in only}) if only else range(sess.doc.page_count)
     changed, count, skipped = [], 0, 0
     for pno in pages:
@@ -2062,6 +2280,8 @@ def op_ocr(sess, a):
     changed = []
     for pno in a.get("pages", []):
         pno = check_page(sess, pno)
+        if extract(sess, pno)["ocr"] and not a.get("force"):
+            continue  # déjà reconnue : la couche de texte serait doublée
         page = sess.doc[pno]
         lines, k, scale, W, H = ocr_page_oriented(page)
         fn = family_fontname_fn(page, "helv", False, False, sess)
@@ -2152,8 +2372,11 @@ def op_fill_field(sess, a):
         target.update()
     elif kind in ("text", "combo", "list"):
         value = "" if value is None else str(value)
-        if kind == "list" and value and value not in [c if isinstance(c, str) else c[-1]
-                                                       for c in (target.choice_values or [])]:
+        pairs = [(c, c) if isinstance(c, str) else (c[0], c[-1]) for c in (target.choice_values or [])]
+        exports = [e for e, _ in pairs]
+        if value and value not in exports:  # libellé reçu : on enregistre sa valeur
+            value = next((e for e, lbl in pairs if lbl == value), value)
+        if kind == "list" and value and value not in exports:
             raise OpError("Ce choix n'existe pas dans la liste.")
         if kind == "text" and target.text_maxlen and len(value) > target.text_maxlen:
             value = value[:target.text_maxlen]
@@ -2167,22 +2390,22 @@ def op_fill_field(sess, a):
 def op_add_image(sess, a):
     pno = check_page(sess, a.get("page"))
     page = sess.doc[pno]
-    data = decode_data_url(a["data"])
     try:
-        prof = fitz.image_profile(data) or {}
+        data = decode_data_url(a["data"])
     except Exception:
-        prof = {}
-    if prof.get("width", 0) * prof.get("height", 0) > MAX_IMAGE_PX:
-        raise OpError("Image trop grande (%d × %d pixels) : réduisez-la avant de l'insérer."
-                      % (prof["width"], prof["height"]))
-    r = native_rect(page, a["bbox"])
+        raise OpError("Image illisible.")
+    check_image_size(data)
+    r = native_rect(page, nums(a.get("bbox"), 4))
     # rotate : redresse l'image sur les pages pivotées
-    try:
-        page.insert_image(r, stream=data, keep_proportion=False, rotate=page.rotation)
-    except Exception:
-        # formats exotiques : on passe par Pixmap
-        pix = fitz.Pixmap(data)
-        page.insert_image(r, pixmap=pix, keep_proportion=False, rotate=page.rotation)
+    with unrotated(page) as r0:
+        try:
+            page.insert_image(r, stream=data, keep_proportion=False, rotate=r0)
+        except Exception:
+            try:  # formats exotiques : on passe par Pixmap
+                pix = fitz.Pixmap(data)
+            except Exception:
+                raise OpError("Image illisible ou endommagée.")
+            page.insert_image(r, pixmap=pix, keep_proportion=False, rotate=r0)
     return {"changed": [pno], "select": [{"page": pno, "bbox": a["bbox"], "type": "image"}]}
 
 
@@ -2192,13 +2415,23 @@ def op_add_shape(sess, a):
     kind = a.get("kind", "rect")
     stroke = rgb(a.get("stroke"))
     fill = rgb(a.get("fill"))
-    width = float(a.get("width", 2))
-    opacity = float(a.get("opacity", 1))
-    shape = page.new_shape()
-    sel_bbox = None
+    width = num(a.get("width"), 0, 200, 2, "épaisseur")
+    opacity = num(a.get("opacity"), 0, 1, 1, "opacité")
     if kind in ("line", "arrow"):
-        p1 = native_point(page, a["p1"])
-        p2 = native_point(page, a["p2"])
+        p1 = native_point(page, nums(a.get("p1"), 2))
+        p2 = native_point(page, nums(a.get("p2"), 2))
+    else:
+        r = native_rect(page, nums(a.get("bbox"), 4))
+    with unrotated(page):
+        shape = page.new_shape()
+        sel_bbox = draw_shape(shape, a, kind, stroke, fill, width, opacity, p1 if kind in ("line", "arrow") else None,
+                              p2 if kind in ("line", "arrow") else None, None if kind in ("line", "arrow") else r)
+        shape.commit()
+    return {"changed": [pno], "select": [{"page": pno, "bbox": sel_bbox, "type": "drawing", "zone": True}]}
+
+
+def draw_shape(shape, a, kind, stroke, fill, width, opacity, p1, p2, r):
+    if kind in ("line", "arrow"):
         shape.draw_line(p1, p2)
         shape.finish(color=stroke or (0, 0, 0), width=width, lineCap=1, stroke_opacity=opacity)
         if kind == "arrow":
@@ -2213,50 +2446,47 @@ def op_add_shape(sess, a):
                          closePath=True, stroke_opacity=opacity, fill_opacity=opacity)
         x0, x1 = sorted([a["p1"][0], a["p2"][0]])
         y0, y1 = sorted([a["p1"][1], a["p2"][1]])
-        sel_bbox = [x0, y0, x1, y1]
+        return [x0, y0, x1, y1]
+    if kind == "ellipse":
+        shape.draw_oval(r)
     else:
-        r = native_rect(page, a["bbox"])
-        if kind == "ellipse":
-            shape.draw_oval(r)
-        else:
-            shape.draw_rect(r)
-        shape.finish(color=stroke, fill=fill, width=width if stroke else 0,
-                     stroke_opacity=opacity, fill_opacity=opacity)
-        sel_bbox = a["bbox"]
-    shape.commit()
-    return {"changed": [pno], "select": [{"page": pno, "bbox": sel_bbox, "type": "drawing", "zone": True}]}
+        shape.draw_rect(r)
+    shape.finish(color=stroke, fill=fill, width=width if stroke else 0,
+                 stroke_opacity=opacity, fill_opacity=opacity)
+    return a["bbox"]
 
 
 def op_add_ink(sess, a):
     pno = check_page(sess, a.get("page"))
     page = sess.doc[pno]
     color = rgb(a.get("color") or "#000")
-    width = float(a.get("width", 2))
-    opacity = float(a.get("opacity", 1))
-    shape = page.new_shape()
-    n = 0
-    for stroke in a.get("strokes", []):
-        pts = [native_point(page, p) for p in stroke]
+    width = num(a.get("width"), 0.1, 200, 2, "épaisseur")
+    opacity = num(a.get("opacity"), 0, 1, 1, "opacité")
+    strokes = []
+    for stroke in (a.get("strokes") or [])[:500]:
+        pts = [native_point(page, nums(p, 2)) for p in stroke[:20000]]
         if len(pts) == 1:
             pts.append(pts[0] + (0.1, 0.1))
-        if len(pts) < 2:
-            continue
-        shape.draw_polyline(pts)
-        n += 1
-    if not n:
+        if len(pts) >= 2:
+            strokes.append(pts)
+    if not strokes:
         return {"changed": []}
-    # un seul tracé pour tous les traits : une signature se sélectionne et se
-    # déplace d'un bloc
-    shape.finish(color=color, width=width, lineCap=1, closePath=False,
-                 stroke_opacity=opacity)
-    shape.commit()
+    with unrotated(page):
+        shape = page.new_shape()
+        for pts in strokes:
+            shape.draw_polyline(pts)
+        # un seul tracé pour tous les traits : une signature se sélectionne et se
+        # déplace d'un bloc
+        shape.finish(color=color, width=width, lineCap=1, closePath=False,
+                     stroke_opacity=opacity)
+        shape.commit()
     return {"changed": [pno]}
 
 
 def op_add_highlight(sess, a):
     pno = check_page(sess, a.get("page"))
     page = sess.doc[pno]
-    x0, y0, x1, y1 = a["bbox"]
+    x0, y0, x1, y1 = nums(a.get("bbox"), 4)
     q = fitz.Quad(*(native_point(page, p) for p in ((x0, y0), (x1, y0), (x0, y1), (x1, y1))))
     annot = page.add_highlight_annot(q)
     annot.set_colors(stroke=rgb(a.get("color") or "#ffeb3b"))
@@ -2268,7 +2498,7 @@ def op_erase(sess, a):
     """Gomme : efface tout ce qui se trouve dans la zone (texte, images, tracés)."""
     pno = check_page(sess, a.get("page"))
     page = sess.doc[pno]
-    r = native_rect(page, a["bbox"])
+    r = native_rect(page, nums(a.get("bbox"), 4))
     for an in [an for an in page.annots() if r.contains(an.rect)]:
         page.delete_annot(an)
     sess.registered = {k for k in sess.registered if k[0] != pno}
@@ -2399,6 +2629,20 @@ def handle_op_error(e):
     return jsonify({"error": str(e)}), 400
 
 
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": getattr(e, "description", None) or "Introuvable."}), 404
+    return e
+
+
+@app.errorhandler(500)
+def server_error(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Erreur interne du serveur : réessayez, ou rechargez la page."}), 500
+    return e
+
+
 @app.errorhandler(413)
 def too_large(_e):
     return jsonify({"error": "Fichier trop volumineux (%d Mo au maximum)."
@@ -2473,7 +2717,13 @@ def open_doc():
     pdf = to_pdf_bytes(data, f.filename, request.form.get("password"))
     name = os.path.splitext(os.path.basename(f.filename or "document"))[0] or "document"
     s = new_session(pdf, name)
-    return jsonify(s.info())
+    try:
+        return jsonify(s.info())
+    except Exception:
+        with SESSIONS_LOCK:
+            SESSIONS.pop(s.id, None)
+        s.close()
+        raise OpError("Ce PDF est endommagé et ne peut pas être ouvert.")
 
 
 @app.post("/api/new")
@@ -2488,6 +2738,7 @@ def new_doc():
 def doc_info(sid):
     s = get_session(sid)
     with s.lock:
+        alive(s)
         return jsonify(s.info())
 
 
@@ -2502,6 +2753,7 @@ def render_page(sid, pno):
         scale = 1.5
     scale = min(max(scale, 0.05), 8)
     with s.lock:
+        alive(s)
         if not 0 <= pno < s.doc.page_count:
             abort(404)
         page = s.doc[pno]
@@ -2516,6 +2768,7 @@ def render_page(sid, pno):
 def page_elements(sid, pno):
     s = get_session(sid)
     with s.lock:
+        alive(s)
         if not 0 <= pno < s.doc.page_count:
             abort(404)
         data = extract(s, pno)
@@ -2529,6 +2782,7 @@ def scanned_pages(sid):
     """Pages qui ne sont que des images (à passer à l'OCR)."""
     s = get_session(sid)
     with s.lock:
+        alive(s)
         out = []
         for page in s.doc:
             r = page.rect
@@ -2550,7 +2804,14 @@ def search(sid):
         return jsonify({"matches": []})
     rx = search_regex(q, request.args.get("case") == "1", request.args.get("whole") == "1")
     with s.lock:
+        alive(s)
         return jsonify({"matches": find_matches(s, rx)[:2000]})
+
+
+def alive(s):
+    """À appeler sous s.lock : le document a pu être fermé entre-temps."""
+    if s.closed:
+        abort(404, "Document introuvable : il a été fermé (trop de documents ouverts).")
 
 
 def reply(s, changed, extra=None):
@@ -2558,6 +2819,18 @@ def reply(s, changed, extra=None):
     out["changed"] = changed
     out.update(extra or {})
     return jsonify(out)
+
+
+def friendly_error(e):
+    """Message compréhensible pour une erreur imprévue (souvent en anglais, de MuPDF)."""
+    msg = str(e).lower()
+    if "image" in msg or "png" in msg or "jpeg" in msg or "jpx" in msg:
+        return "L'opération a échoué : une image est illisible ou endommagée."
+    if "font" in msg:
+        return "L'opération a échoué : une police du document est inutilisable."
+    if "memory" in msg or isinstance(e, MemoryError):
+        return "L'opération a échoué : mémoire insuffisante."
+    return "L'opération a échoué (%s). Elle a été annulée, le document est intact." % (str(e)[:120] or type(e).__name__)
 
 
 @app.post("/api/doc/<sid>/op")
@@ -2570,6 +2843,7 @@ def do_op(sid):
     if not fn:
         raise OpError("Opération inconnue : %s" % a.get("op"))
     with s.lock:
+        alive(s)
         try:
             s.prepare()
             res = fn(s, a) or {}
@@ -2579,14 +2853,20 @@ def do_op(sid):
         except Exception as e:  # on ne laisse jamais un document à moitié modifié
             s.rollback()
             app.logger.exception("op %s", a.get("op"))
-            raise OpError("L'opération a échoué : %s" % e)
+            raise OpError(friendly_error(e))
         extra = {k: res[k] for k in ("count", "skipped") if k in res}
         if res.get("changed") == []:  # rien n'a changé : pas de nouvelle étape
             if s.doc.is_dirty:
                 s.rollback()
             return reply(s, [], extra)
         s.commit(res.get("changed"), amend=bool(a.get("amend")))
-        extra["select"] = resolve_selection(s, res.get("select"))
+        try:
+            extra["select"] = resolve_selection(s, res.get("select"))
+        except Exception:
+            app.logger.exception("sélection")
+            extra["select"] = []
+        if a.get("op") == "ocr":
+            release_memory()
         return reply(s, res.get("changed"), extra)
 
 
@@ -2598,6 +2878,7 @@ def merge(sid):
         raise OpError("Aucun fichier reçu.")
     pdf = to_pdf_bytes(f.read(), f.filename, request.form.get("password"))
     with s.lock:
+        alive(s)
         try:
             at = min(max(int(request.form.get("at", s.doc.page_count)), 0), s.doc.page_count)
             s.prepare()
@@ -2615,6 +2896,7 @@ def merge(sid):
 def undo(sid):
     s = get_session(sid)
     with s.lock:
+        alive(s)
         return reply(s, s.undo())
 
 
@@ -2622,6 +2904,7 @@ def undo(sid):
 def redo(sid):
     s = get_session(sid)
     with s.lock:
+        alive(s)
         return reply(s, s.redo())
 
 
@@ -2653,29 +2936,39 @@ def export_pdf(s, pages=None, compress=False):
     """PDF final : pages choisies, images éventuellement recompressées, polices
     réduites aux caractères utilisés (une police complète pèse ~1 Mo)."""
     with s.lock:
+        alive(s)
         data = s.doc.tobytes(garbage=1)
     out = fitz.open("pdf", data)
     try:
-        if pages and len(pages) < out.page_count:
+        if pages and pages != list(range(out.page_count)):  # extrait ou nouvel ordre
             out.select(pages)
-        if compress:
+        if compress and any(out[i].get_images() for i in range(out.page_count)):
             try:  # images ré-échantillonnées à 150 ppp, en JPEG
                 out.rewrite_images(dpi_threshold=200, dpi_target=150, quality=75, lossy=True, lossless=True)
+                # réécrit et rouvert avant la suite : sinon le nettoyage final peut
+                # confondre une police ajoutée avec une police Type3 (texte illisible)
+                data = out.tobytes(garbage=1)
+                out.close()
+                out = fitz.open("pdf", data)
             except Exception:
                 app.logger.exception("compression des images")
         try:
             out.subset_fonts()
         except Exception:
             app.logger.exception("sous-ensemble des polices")
-        return out.tobytes(garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, use_objstms=1)
+        # garbage=4 (doublons) est très lent sur les gros documents pour un gain nul
+        garbage = 4 if out.xref_length() < 3000 else 2
+        return out.tobytes(garbage=garbage, deflate=True, deflate_images=True, deflate_fonts=True, use_objstms=1)
     finally:
         out.close()
+        release_memory()
 
 
 @app.get("/api/doc/<sid>/download")
 def download(sid):
     s = get_session(sid)
     with s.lock:
+        alive(s)
         pages = parse_pages(request.args.get("pages"), s.doc.page_count)
     result = export_pdf(s, pages, request.args.get("compress") == "1")
     name = safe_name(request.args.get("name"), s.name + "-modifie.pdf")

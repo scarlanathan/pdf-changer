@@ -16,6 +16,7 @@
     </div>
     <button class="btn" id="btnOpen" title="Ouvrir un fichier (Ctrl+O)"><i data-icon="open"></i><span>Ouvrir</span></button>
     <button class="btn ghost" id="btnNew" title="Nouveau document vierge"><i data-icon="filePlus"></i><span>Nouveau</span></button>
+    <button class="icon-btn needs-doc narrow-only" id="btnThumbsToggle" title="Afficher les pages" aria-label="Afficher les pages"><i data-icon="pages"></i></button>
     <div class="docname" id="docName"></div>
     <div class="spacer"></div>
     <div class="group needs-doc">
@@ -34,9 +35,10 @@
     </div>
     <div class="group zoom needs-doc">
       <button class="icon-btn" id="zoomOut" title="Zoom arrière (Ctrl -)" aria-label="Zoom arrière"><i data-icon="minus"></i></button>
-      <button class="zoom-val" id="zoomVal" title="Choisir le zoom" aria-haspopup="menu">100%</button>
+      <button class="zoom-val" id="zoomVal" title="Choisir le zoom" aria-haspopup="menu" aria-expanded="false">100%</button>
       <button class="icon-btn" id="zoomIn" title="Zoom avant (Ctrl +)" aria-label="Zoom avant"><i data-icon="plus"></i></button>
     </div>
+    <button class="icon-btn needs-doc narrow-only" id="btnPanelToggle" title="Afficher les réglages" aria-label="Afficher les réglages"><i data-icon="sliders"></i></button>
     <div class="split needs-doc">
       <button class="btn primary" id="btnDownload" title="Enregistrer le PDF (Ctrl+S)"><i data-icon="download"></i><span>Enregistrer</span></button>
       <button class="btn primary split-more" id="btnExport" title="Exporter : certaines pages, taille réduite… (Ctrl+Maj+S)" aria-label="Options d'export" aria-haspopup="dialog"><i data-icon="down"></i></button>
@@ -48,7 +50,7 @@
   <div id="main">
     <aside id="sidebar" class="needs-doc">
       <div class="side-title">Pages <span id="pageCount"></span></div>
-      <div id="thumbs" role="listbox" aria-label="Pages du document" aria-multiselectable="true"></div>
+      <div id="thumbs" role="list" aria-label="Pages du document"></div>
       <div id="pagebar" hidden></div>
       <div class="side-actions">
         <button class="btn ghost small" id="btnBlank"><i data-icon="plus"></i>Page blanche</button>

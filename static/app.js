@@ -42,6 +42,8 @@ const ICONS = {
   replace: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',
   paragraph: '<path d="M13 4v16M17 4v16M19 4H9.5a4.5 4.5 0 000 9H13"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
+  pages: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 5h7M14 10h7M14 15h7M14 20h5"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
 };
 function icon(name) {
@@ -70,6 +72,11 @@ const TOOLS = [
 const TYPE_LABEL = { text: 'Texte', image: 'Image', drawing: 'Forme', annot: 'Annotation', widget: 'Champ' };
 const COLORS = ['#111111', '#555555', '#e5484d', '#f76b15', '#f5c400', '#30a46c', '#0090ff', '#4f46e5', '#8e4ec6', '#ffffff'];
 const HL_COLORS = ['#ffeb3b', '#a7f3a0', '#9ad8ff', '#ffb3d9', '#ffc57a'];
+const COLOR_NAMES = {
+  '#111111': 'Noir', '#555555': 'Gris', '#e5484d': 'Rouge', '#f76b15': 'Orange', '#f5c400': 'Jaune', '#30a46c': 'Vert',
+  '#0090ff': 'Bleu', '#4f46e5': 'Indigo', '#8e4ec6': 'Violet', '#ffffff': 'Blanc', '#1a2a6c': 'Bleu nuit',
+  '#ffeb3b': 'Jaune fluo', '#a7f3a0': 'Vert fluo', '#9ad8ff': 'Bleu fluo', '#ffb3d9': 'Rose fluo', '#ffc57a': 'Orange fluo',
+};
 
 // ------------------------------------------------------------------ état
 const S = {
@@ -102,6 +109,8 @@ function toast(msg, type = 'info', ms = 2800, action) {
     const b = document.createElement('button');
     b.textContent = action.label;
     b.onclick = () => { t.remove(); action.fn(); };
+    // « Annuler » ne vaut que tant qu'aucune autre modification n'a eu lieu
+    if (action === undoAction) { t.classList.add('undo'); t._ver = S.version; }
     t.appendChild(b);
     ms = Math.max(ms, 6000);
   }
@@ -119,7 +128,8 @@ const undoAction = { label: 'Annuler', fn: () => undo() };
 
 // Boîte de dialogue : modal({title, body, buttons:[{label, value, primary}], input, collect}) -> Promise
 // collect(m) : valeur rendue par un bouton « positif » (formulaire dans le corps).
-function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primary: true }], input, wide, onOpen, collect }) {
+// sticky : un clic à côté ne ferme pas (travail en cours) ; validate(m) -> message d'erreur ou rien
+function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primary: true }], input, wide, onOpen, collect, sticky, validate }) {
   return new Promise(resolve => {
     flushPending();
     const root = $('#modalRoot');
@@ -129,6 +139,7 @@ function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primar
     m.innerHTML = `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="mt${root.children.length}">
       <h2 id="mt${root.children.length}">${title}</h2><div class="modal-body">${body}</div>
       ${input ? `<input class="modal-input" type="${input.type || 'text'}" placeholder="${escapeHtml(input.placeholder || '')}" value="${escapeHtml(input.value || '')}" aria-label="${escapeHtml(input.placeholder || title)}">` : ''}
+      <p class="modal-error" role="alert" hidden></p>
       <div class="modal-actions">${buttons.map((b, i) => `<button class="btn ${b.primary ? 'primary' : ''}" data-i="${i}">${b.label}</button>`).join('')}</div></div>`;
     root.appendChild(m);
     hydrateIcons(m);
@@ -137,6 +148,13 @@ function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primar
       if (inp) return bt.value ? inp.value : null;
       if (collect && bt.value) return collect(m);
       return bt.value;
+    };
+    const tryClose = bt => {
+      if (validate && bt.value) {
+        const err = validate(m);
+        if (err) { const p = m.querySelector('.modal-error'); p.textContent = err; p.hidden = false; return; }
+      }
+      close(valueOf(bt));
     };
     const close = v => {
       m.remove();
@@ -149,7 +167,7 @@ function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primar
       if (!m.isConnected || root.lastElementChild !== m) return;  // une autre fenêtre est au-dessus
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
       else if (e.key === 'Enter' && (inp || !e.target.closest('button, textarea, select'))) {
-        e.preventDefault(); e.stopPropagation(); close(valueOf(primary));
+        e.preventDefault(); e.stopPropagation(); tryClose(primary);
       } else if (e.key === 'Tab') {
         // le focus reste dans la fenêtre
         const f = $$('button:not([disabled]), input:not([disabled]), select, textarea, canvas, [tabindex="0"]', m).filter(x => x.offsetParent !== null);
@@ -160,8 +178,8 @@ function modal({ title, body = '', buttons = [{ label: 'OK', value: true, primar
       }
     };
     document.addEventListener('keydown', onKey, true);
-    m.addEventListener('pointerdown', e => { if (e.target === m) close(null); });
-    m.querySelectorAll('.modal-actions button').forEach(b => b.onclick = () => close(valueOf(buttons[+b.dataset.i])));
+    m.addEventListener('pointerdown', e => { if (e.target === m && !(typeof sticky === 'function' ? sticky() : sticky)) close(null); });
+    m.querySelectorAll('.modal-actions button').forEach(b => b.onclick = () => tryClose(buttons[+b.dataset.i]));
     if (onOpen) onOpen(m, close);
     setTimeout(() => (inp || m.querySelector('.btn.primary') || m.querySelector('button')).focus(), 30);
   });
@@ -236,8 +254,13 @@ async function leaveDocument() {
   if (v === 'save') return download();
   return v === 'drop';
 }
+let opening = false;  // une ouverture à la fois (double clic, glisser répété…)
 async function openFile(file, password) {
-  if (!password && S.sid && !(await leaveDocument())) return;
+  if (!password) {
+    if (opening) return;
+    opening = true;
+    try { if (S.sid && !(await leaveDocument())) return; } finally { opening = false; }
+  }
   const fd = new FormData();
   fd.append('file', file);
   if (password) fd.append('password', password);
@@ -254,9 +277,13 @@ async function openFile(file, password) {
   } finally { busy(false); }
 }
 async function newDocument() {
-  if (S.sid && !(await leaveDocument())) return;
-  busy(true);
-  try { loadInfo(await apiPost('/api/new'), true); } catch (e) { toast(e.message, 'error'); } finally { busy(false); }
+  if (opening) return;
+  opening = true;
+  try {
+    if (S.sid && !(await leaveDocument())) return;
+    busy(true);
+    try { loadInfo(await apiPost('/api/new'), true); } catch (e) { toast(e.message, 'error'); } finally { busy(false); }
+  } finally { opening = false; }
 }
 async function mergeFile(file, at, password) {
   if (!S.sid) return openFile(file);
@@ -292,7 +319,12 @@ function loadInfo(info, fresh) {
   // les notifications du document précédent (« Annuler »…) n'ont plus de sens
   if (fresh) $$('.toast').forEach(dismissToast);
   S.ocrAvailable = !!info.ocrAvailable;
-  if (fresh) S.savedVersion = info.canUndo ? -1 : info.version;
+  if (fresh) {
+    let sv = NaN;
+    try { sv = +sessionStorage.getItem('pdfchanger.saved.' + info.sid); } catch (e) { /* ignore */ }
+    S.savedVersion = sv === info.version || !info.canUndo ? info.version : -1;
+    S.scanPages = []; S.pageAnchor = null; S.pageSel = new Set();
+  }
   closeFind();
   applyInfo(Object.assign({}, info, { changed: null }));
   if (fresh) { fitWidth(); viewer.scrollTop = 0; checkScans(); }
@@ -303,6 +335,7 @@ function applyInfo(info) {
   const structural = info.changed == null || info.pages.length !== S.pages.length ||
     info.pages.some((p, i) => !S.pages[i] || p.w !== S.pages[i].w || p.h !== S.pages[i].h);
   S.version = info.version;
+  $$('.toast.undo').forEach(t => { if (t._ver !== S.version) dismissToast(t); });
   S.canUndo = info.canUndo;
   S.canRedo = info.canRedo;
   const oldCount = S.pages.length;
@@ -374,17 +407,32 @@ function undo() {
   }
   flushPending();
   const sid = S.sid;
-  enqueue(async () => { const r = await apiPost(`/api/doc/${sid}/undo`); if (sid === S.sid) applyInfo(r); });
+  enqueue(async () => { const r = await apiPost(`/api/doc/${sid}/undo`); if (sid === S.sid) { applyInfo(r); refreshScans(); } });
 }
 function redo() {
   if (!S.sid) return;
   flushPending();
   const sid = S.sid;
-  enqueue(async () => { const r = await apiPost(`/api/doc/${sid}/redo`); if (sid === S.sid) applyInfo(r); });
+  enqueue(async () => { const r = await apiPost(`/api/doc/${sid}/redo`); if (sid === S.sid) { applyInfo(r); refreshScans(); } });
+}
+// pages scannées, sans proposer l'OCR (après annuler / rétablir)
+async function refreshScans() {
+  if (!S.ocrAvailable || !S.sid) return;
+  try {
+    const r = await apiJson(`/api/doc/${S.sid}/scans`);
+    const before = (S.scanPages || []).join();
+    S.scanPages = r.pages;
+    if (before !== r.pages.join()) renderPanel();
+  } catch (e) { /* ignore */ }
 }
 // Enregistre le PDF.  opts : { pages: '1-3,5', compress: true, name } (export partiel ou réduit)
+let downloading = false;
 async function download(opts = {}) {
-  if (!S.sid) return false;
+  if (!S.sid || downloading) return false;
+  downloading = true;
+  try { return await doDownload(opts); } finally { downloading = false; }
+}
+async function doDownload(opts) {
   flushPending();
   await queue;
   const full = !opts.pages && !opts.compress;
@@ -394,7 +442,11 @@ async function download(opts = {}) {
   if (opts.compress) q.set('compress', '1');
   const url = `/api/doc/${S.sid}/download?${q}`;
   const version = S.version;
-  const saved = () => { if (full) { S.savedVersion = version; updateTopbar(); } };
+  const saved = () => {
+    if (!full) return;
+    S.savedVersion = version; updateTopbar();
+    try { sessionStorage.setItem('pdfchanger.saved.' + S.sid, String(version)); } catch (e) { /* ignore */ }
+  };
   let handle = null;
   if (window.showSaveFilePicker) {
     try {
@@ -546,6 +598,7 @@ function fitPage() {
   updateTopbar();
 }
 function zoomMenu() {
+  if (!$('#ctxmenu').hidden && $('#ctxmenu').dataset.owner === 'zoom') { hideMenu(); return; }
   const b = $('#zoomVal').getBoundingClientRect();
   const levels = [50, 75, 100, 125, 150, 200, 300, 400];
   showMenu(b.left, b.bottom + 6, [
@@ -553,7 +606,7 @@ function zoomMenu() {
     { label: 'Page entière', icon: 'scan', kbd: 'Ctrl+9', fn: fitPage },
     { sep: true },
     ...levels.map(l => ({ label: l + ' %', check: Math.round(S.zoom * 100) === l, fn: () => setZoom(l / 100) })),
-  ]);
+  ], 'zoom');
 }
 
 // ------------------------------------------------------------------ miniatures
@@ -579,7 +632,7 @@ function buildThumbs(changed) {
     t.draggable = true;
     t.dataset.p = p;
     t.tabIndex = -1;
-    t.setAttribute('role', 'option');
+    t.setAttribute('role', 'group');
     t.setAttribute('aria-label', `Page ${p + 1}`);
     t.innerHTML = `
       <div class="timg" style="width:${w}px;height:${h}px"><img loading="lazy" draggable="false" alt="" src="${thumbSrc(p, pg)}"></div>
@@ -603,7 +656,8 @@ function syncThumbState() {
     const p = +t.dataset.p;
     t.classList.toggle('active', p === S.current);
     t.classList.toggle('picked', S.pageSel.has(p));
-    t.setAttribute('aria-selected', S.pageSel.has(p) || p === S.current ? 'true' : 'false');
+    if (p === S.current) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
+    t.setAttribute('aria-label', `Page ${p + 1}${S.pageSel.has(p) ? ' (sélectionnée)' : ''}`);
     t.tabIndex = p === S.current ? 0 : -1;
   });
   const bar = $('#pagebar');
@@ -709,7 +763,7 @@ $('#thumbs').addEventListener('keydown', e => {
     scrollToPage(q, false); setCurrentPage(q, true);
   } else if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault(); e.stopPropagation(); scrollToPage(p);
-  } else if (e.key === 'Delete') {
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault(); e.stopPropagation();
     pageAction('delete', S.pageSel.size > 1 ? pickedPages() : [p]);
   }
@@ -843,6 +897,7 @@ function setHover(p, el) {
 }
 
 function drawSelection() {
+  document.body.classList.toggle('has-sel', S.sel.length > 0);  // au doigt : la page ne défile plus, l'élément se déplace
   $$('.selbox, .handle, .minibar').forEach(n => n.remove());
   const items = selEls();
   for (const { page, el } of items) {
@@ -886,7 +941,7 @@ function drawSelection() {
     const q = single && blockOf(page, single);
     bar.innerHTML =
       (single && single.type === 'text' ? (q
-        ? `<button data-a="edit" title="Modifier tout le bloc de texte (double-clic / Entrée)"><i data-icon="paragraph"></i>Modifier le ${q.flow ? 'paragraphe' : 'bloc'}</button><button data-a="editLine" title="Modifier seulement cette ligne (Alt + double-clic)"><i data-icon="edit"></i>Ligne seule</button>`
+        ? `<button data-a="edit" title="${q.flow ? 'Modifier tout le paragraphe (double-clic / Entrée)' : 'Modifier toutes les lignes du bloc'}"><i data-icon="paragraph"></i>Modifier le ${q.flow ? 'paragraphe' : 'bloc'}</button><button data-a="editLine" title="Modifier seulement cette ligne (Alt + double-clic)"><i data-icon="edit"></i>Ligne seule</button>`
         : `<button data-a="edit" title="Modifier le texte (double-clic / Entrée)"><i data-icon="edit"></i>Modifier</button>`) : '') +
       (items.some(i => ['text', 'image', 'drawing'].includes(i.el.type)) ? `<button data-a="dup" title="Dupliquer (Ctrl+D)"><i data-icon="copy"></i>Dupliquer</button>` : '') +
       `<button data-a="del" class="del" title="Supprimer (Suppr)"><i data-icon="trash"></i>Supprimer</button>`;
@@ -993,7 +1048,10 @@ pagesEl.addEventListener('pointerdown', e => {
   if (S.placing) { e.preventDefault(); placeSignature(p, pt); return; }
   // au doigt, avec l'outil de sélection : on laisse le navigateur faire défiler,
   // un simple toucher sélectionne (voir pointerup)
-  if (e.pointerType === 'touch' && S.tool === 'select') { drag = { kind: 'tap', p, start: pt }; return; }
+  if (e.pointerType === 'touch' && S.tool === 'select') {
+    const hit = hitTest(p, pt.x, pt.y);
+    if (!(hit && isSelected(p, hit))) { drag = { kind: 'tap', p, start: pt }; return; }
+  }
   e.preventDefault();
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   setCurrentPage(p);
@@ -1083,8 +1141,8 @@ window.addEventListener('pointermove', e => {
       showGhost(p, b, [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy], e.altKey);
     }
   } else if (drag.kind === 'resize') {
-    const to = resizeBox(drag.el.bbox, drag.h, pt.x - drag.start.x, pt.y - drag.start.y,
-      drag.el.type === 'text' || (e.shiftKey && drag.h.length === 2));
+    const keep = drag.el.type === 'text' || (drag.h.length === 2 && (drag.el.type === 'image' ? !e.shiftKey : e.shiftKey));
+    const to = resizeBox(drag.el.bbox, drag.h, pt.x - drag.start.x, pt.y - drag.start.y, keep);
     drag.to = to;
     clearGhosts();
     showGhost(drag.page, drag.el.bbox, to, false);
@@ -1277,6 +1335,9 @@ viewer.addEventListener('scroll', () => {
   setCurrentPage(cur);
 }, { passive: true });
 
+window.addEventListener('wheel', e => {
+  if (e.ctrlKey && S.sid && !e.target.closest('#viewer')) e.preventDefault();
+}, { passive: false });
 viewer.addEventListener('wheel', e => {
   if (!e.ctrlKey || !S.sid) return;
   e.preventDefault();
@@ -1335,11 +1396,13 @@ function finishRectTool(p, r, start) {
   }
   if (tiny) return;
   if (t === 'whiteout') {
-    runOp({ op: 'add_shape', kind: 'rect', page: p, bbox: r.map(round2), stroke: 'none', fill: '#ffffff', width: 0, opacity: 1 });
+    runOp({ op: 'add_shape', kind: 'rect', page: p, bbox: r.map(round2), stroke: 'none', fill: '#ffffff', width: 0, opacity: 1 })
+      .then(res => { if (res) toast('Zone masquée', 'info', 4000, undoAction); });
   } else if (t === 'highlight') {
     runOp({ op: 'add_highlight', page: p, bbox: r.map(round2), color: P.hl });
   } else if (t === 'erase') {
-    runOp({ op: 'erase', page: p, bbox: r.map(round2) });
+    runOp({ op: 'erase', page: p, bbox: r.map(round2) })
+      .then(res => { if (res) toast('Contenu de la zone effacé', 'info', 5000, undoAction); });
   }
 }
 
@@ -1716,12 +1779,12 @@ function setTool(t) {
 function swatches(name, value, list, allowNone) {
   return `<div class="swatches" data-prop="${name}">` +
     (allowNone ? `<button class="sw none ${value === 'none' ? 'active' : ''}" data-v="none" title="Aucun"></button>` : '') +
-    list.map(c => `<button class="sw ${value === c ? 'active' : ''}" data-v="${c}" style="background:${c}" title="${c}"></button>`).join('') +
+    list.map(c => `<button class="sw ${value === c ? 'active' : ''}" data-v="${c}" style="background:${c}" title="${COLOR_NAMES[c] || c}" aria-label="${COLOR_NAMES[c] || c}" aria-pressed="${value === c}"></button>`).join('') +
     `<input type="color" class="sw-custom" value="${value === 'none' ? '#000000' : value}" title="Autre couleur">` +
     '</div>';
 }
 function fontSelect(value) {
-  return `<select data-prop="font">${S.fonts.map(f => `<option value="${f.key}" ${f.key === value ? 'selected' : ''}>${escapeHtml(f.label)}</option>`).join('')}</select>`;
+  return `<select data-prop="font" aria-label="Police">${S.fonts.map(f => `<option value="${f.key}" ${f.key === value ? 'selected' : ''}>${escapeHtml(f.label)}</option>`).join('')}</select>`;
 }
 function rangeRow(label, prop, v, min, max, step, fmt) {
   return `<div class="row"><label>${label}</label><input type="range" data-prop="${prop}" min="${min}" max="${max}" step="${step}" value="${v}"><span class="val" data-val="${prop}">${fmt(v)}</span></div>`;
@@ -1747,9 +1810,9 @@ function renderPanel() {
         if (el.ocr) html += `<p class="badge">${icon('scan')} Texte reconnu sur un scan</p>`;
         if (q) html += `<div class="btn-row" style="margin-bottom:10px"><button class="btn small primary" id="pEditBlock">${icon('paragraph')}Modifier le ${q.flow ? 'paragraphe' : 'bloc'} (${q.lines.length} lignes)</button></div>`;
         html += `<div class="textprev">${escapeHtml(el.text)}</div>
-          <div class="row"><label>Taille</label><input type="number" id="selSize" min="2" max="400" step="0.5" value="${el.size}"></div>
+          <div class="row"><label for="selSize">Taille</label><input type="number" id="selSize" min="2" max="400" step="0.5" value="${el.size}"></div>
           <div class="row"><label>Couleur</label>${swatches('selColor', el.color, COLORS)}</div>
-          <div class="row"><label>Police</label><select id="selFont"><option value="">Police d'origine</option>${S.fonts.map(f => `<option value="${f.key}">${escapeHtml(f.label)}</option>`).join('')}</select></div>`;
+          <div class="row"><label for="selFont">Police</label><select id="selFont"><option value="">Police d'origine</option>${S.fonts.map(f => `<option value="${f.key}">${escapeHtml(f.label)}</option>`).join('')}</select></div>`;
       } else if (el.type === 'widget') {
         html += `<p class="lead">${escapeHtml(el.subtype || '')}${el.label ? ' — ' + escapeHtml(el.label) : ''}</p>`;
         if (fillable(el)) html += `<div class="btn-row" style="margin-bottom:10px"><button class="btn small primary" id="pFill">${icon('edit')}Remplir ce champ</button></div>`;
@@ -1776,7 +1839,7 @@ function renderPanel() {
     html += `<div class="psec"><h3>${t === 'text' ? 'Nouveau texte' : 'Style du texte ajouté'}</h3>
       ${t === 'text' ? '<p class="lead">Cliquez sur la page à l\'endroit voulu, tapez, puis Entrée.</p>' : ''}
       <div class="row"><label>Police</label>${fontSelect(P.font)}</div>
-      <div class="row"><label>Taille</label><input type="number" data-prop="size" min="4" max="300" step="1" value="${P.size}">
+      <div class="row"><label>Taille</label><input type="number" data-prop="size" min="4" max="300" step="1" value="${P.size}" aria-label="Taille">
         <div class="toggle-row"><button class="toggle ${P.bold ? 'on' : ''}" data-toggle="bold" title="Gras">B</button><button class="toggle ${P.italic ? 'on' : ''}" data-toggle="italic" title="Italique"><i style="font-family:serif">I</i></button></div></div>
       <div class="row"><label>Couleur</label>${swatches('color', P.color, COLORS)}</div>
     </div>`;
@@ -1910,9 +1973,10 @@ function bindPanel(panel, items) {
     if (sg) startPlacing(sg);
   }));
   panel.querySelectorAll('[data-sigdel]').forEach(b => b.addEventListener('click', () => {
-    storeSignatures(loadSignatures().filter(x => x.id !== b.dataset.sigdel));
+    const before = loadSignatures();
+    storeSignatures(before.filter(x => x.id !== b.dataset.sigdel));
     renderPanel();
-    toast('Signature oubliée', 'info', 2000);
+    toast('Signature oubliée', 'info', 6000, { label: 'Annuler', fn: () => { storeSignatures(before); renderPanel(); } });
   }));
   const size = panel.querySelector('#selSize');
   if (size) size.addEventListener('change', () => { const v = parseFloat(size.value); if (v > 0) restyleSelected({ size: v }); });
@@ -2044,25 +2108,33 @@ async function runOcr(pages) {
   const root = $('#modalRoot');
   const m = document.createElement('div');
   m.className = 'modal-back';
-  m.innerHTML = `<div class="modal"><h2>${icon('sparkle')} Reconnaissance du texte…</h2>
+  m.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="Reconnaissance du texte"><h2>${icon('sparkle')} Reconnaissance du texte…</h2>
     <div class="modal-body"><p class="ocr-status">Préparation…</p><div class="pbar"><div></div></div></div>
     <div class="modal-actions"><button class="btn">Arrêter</button></div></div>`;
   root.appendChild(m);
-  m.querySelector('button').onclick = () => { cancelled = true; m.querySelector('.ocr-status').textContent = 'Arrêt après la page en cours…'; };
+  const stop = () => { cancelled = true; m.querySelector('.ocr-status').textContent = 'Arrêt après la page en cours…'; };
+  m.querySelector('button').onclick = stop;
+  const onEsc = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); stop(); } };
+  document.addEventListener('keydown', onEsc, true);
+  setTimeout(() => m.querySelector('button').focus(), 30);
   const bar = m.querySelector('.pbar div');
+  let stepped = false;  // une seule annulation pour tout l'OCR
   for (let i = 0; i < pages.length && !cancelled; i++) {
     m.querySelector('.ocr-status').textContent = pages.length > 1 ? `Page ${pages[i] + 1} — ${i + 1} sur ${pages.length}` : `Page ${pages[i] + 1}`;
     bar.style.width = (i / pages.length * 100) + '%';
-    const res = await runOp({ op: 'ocr', pages: [pages[i]], amend: i > 0 });
+    const res = await runOp({ op: 'ocr', pages: [pages[i]], amend: stepped });
     if (!res) break;
+    if (res.changed && res.changed.length) stepped = true;
     done++;
     S.scan[pages[i]] = false;
     drawScanBanner(pages[i]);
   }
   bar.style.width = '100%';
   m.remove();
+  document.removeEventListener('keydown', onEsc, true);
   ocrRunning = false;
   S.scanPages = (S.scanPages || []).filter(p => !pages.slice(0, done).includes(p));
+  renderPanel();
   if (done) {
     toast(`Texte reconnu sur ${done} page${done > 1 ? 's' : ''} — double-cliquez sur une ligne pour la modifier`, 'ok', 6000, undoAction);
     scrollToPage(pages[0]);
@@ -2275,6 +2347,23 @@ function flushNudge() {
     return elRef(page, el, { to: [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy] });
   }));
 }
+// Enregistrer / rechercher marchent aussi pendant la saisie (texte, champ, recherche) :
+// écouteur en phase de capture, avant les zones de saisie qui arrêtent les touches.
+document.addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || !S.sid) return;
+  const kl = e.key.toLowerCase();
+  if (kl !== 's' && kl !== 'f' && kl !== 'h') return;
+  e.preventDefault();
+  if ($('#modalRoot').children.length) return;
+  e.stopPropagation();
+  if (kl === 's') {
+    if (fieldEd) closeFieldEditor(false);
+    if (e.shiftKey) exportDialog(); else download();
+  } else if (!e.target.closest || !e.target.closest('#findbar')) openFind(kl === 'h');
+  else if (kl === 'h' && !F.replace) { F.replace = true; openFind(true); }
+  else { const q = $('#fq'); if (q) { q.focus(); q.select(); } }
+}, true);
+
 document.addEventListener('keydown', e => {
   if (!S.sid) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); $('#fileOpen').click(); }
@@ -2284,9 +2373,30 @@ document.addEventListener('keydown', e => {
   const k = e.key;
   const ctrl = e.ctrlKey || e.metaKey;
   if (!$('#ctxmenu').hidden) { if (k === 'Escape') { e.preventDefault(); hideMenu(); } return; }
-  if (ctrl && (k.toLowerCase() === 'f' || k.toLowerCase() === 'h')) { e.preventDefault(); openFind(k.toLowerCase() === 'h'); return; }
-  if (ctrl && k.toLowerCase() === 's') { e.preventDefault(); if (e.shiftKey) exportDialog(); else download(); return; }
   if (isTyping()) return;
+  if (k === 'Tab' && !ctrl && !e.altKey) {
+    const sel = selEls();
+    // formulaire : Tab passe au champ suivant (jamais aux boutons de la barre)
+    if (sel.length === 1 && fillable(sel[0].el)) { e.preventDefault(); nextField(e.shiftKey ? -1 : 1, sel[0]); return; }
+    // sinon, depuis la page : parcourt les éléments de la page courante
+    const ae0 = document.activeElement;
+    if (!ae0 || ae0 === document.body || sel.length) { e.preventDefault(); cycleElement(e.shiftKey ? -1 : 1); return; }
+  }
+  // menu de l'élément au clavier : Maj+F10 ou touche Menu
+  if ((k === 'F10' && e.shiftKey) || k === 'ContextMenu') {
+    const it = selEls()[0];
+    if (it) {
+      e.preventDefault();
+      const r = pageEl(it.page).getBoundingClientRect(), b = it.el.bbox;
+      const pt = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+      pageMenu(it.page, pt, r.left + pt.x * S.zoom, r.top + pt.y * S.zoom);
+      return;
+    }
+  }
+  if (k === ' ' && S.sel.length === 1) {
+    const it = selEls()[0];
+    if (it && fillable(it.el) && (it.el.kind === 'checkbox' || it.el.kind === 'radio')) { e.preventDefault(); openField(it.page, it.el); return; }
+  }
   // Entrée / Espace sur un bouton : c'est le bouton qui agit
   const ae = document.activeElement;
   if ((k === 'Enter' || k === ' ') && ae && ae !== document.body && ae.closest('button, a, select, [role="option"], [role="menuitem"]')) return;
@@ -2307,8 +2417,9 @@ document.addEventListener('keydown', e => {
       setSelection((S.els[p] || []).filter(el => !isBig(p, el)).map(el => ({ page: p, id: el.id })));
     } else if (k === '+' || k === '=') { e.preventDefault(); setZoom(S.zoom * 1.2); }
     else if (k === '-') { e.preventDefault(); setZoom(S.zoom / 1.2); }
-    else if (k === '0') { e.preventDefault(); fitWidth(); }
-    else if (k === '9') { e.preventDefault(); fitPage(); }
+    // e.code : marche aussi en AZERTY (la touche 0 y donne « à », la 9 « ç »)
+    else if (k === '0' || e.code === 'Digit0' || e.code === 'Numpad0') { e.preventDefault(); fitWidth(); }
+    else if (k === '9' || e.code === 'Digit9' || e.code === 'Numpad9') { e.preventDefault(); fitPage(); }
     return;
   }
   if (k === 'Delete' || k === 'Backspace') { if (S.sel.length) { e.preventDefault(); deleteSelection(); } return; }
@@ -2383,9 +2494,15 @@ function pasteElements(p, at) {
   if (items.length < c.items.length) toast('Les annotations ne se collent que sur leur propre page.', 'info', 4000);
   if (!items.length) return true;
   const cut = c.cut;
-  if (cut) S.clip = null;  // couper-coller : une seule fois
   runOp({ op: 'move', copy: !cut, items }).then(r => {
-    if (r && r.select && r.select.length) { S.selQuiet = false; drawSelection(); }
+    if (!r) return;
+    if (!r.changed || !r.changed.length) {
+      toast(cut ? "L'élément coupé a changé depuis : coupez-le à nouveau." : "L'élément copié a été modifié ou supprimé depuis : copiez-le à nouveau.", 'error', 5000);
+      if (S.clip === c) S.clip = null;
+      return;
+    }
+    if (cut && S.clip === c) S.clip = null;  // couper-coller : une seule fois
+    if (r.select && r.select.length) { S.selQuiet = false; drawSelection(); }
   });
   return true;
 }
@@ -2477,8 +2594,10 @@ window.addEventListener('drop', e => {
 
 // ------------------------------------------------------------------ menu contextuel
 // items : [{ label, icon, kbd, fn, danger, disabled, check } | { sep: true }]
-function showMenu(x, y, items) {
+function showMenu(x, y, items, owner) {
   const m = $('#ctxmenu');
+  m.dataset.owner = owner || '';
+  $('#zoomVal').setAttribute('aria-expanded', owner === 'zoom');
   m.innerHTML = items.map((it, i) => it.sep ? '<div class="msep" role="separator"></div>' :
     `<button role="menuitem" data-i="${i}" class="${it.danger ? 'danger' : ''}" ${it.disabled ? 'disabled' : ''}>` +
     `<span class="mi">${it.check ? icon('check') : it.icon ? icon(it.icon) : ''}</span><span class="ml">${escapeHtml(it.label)}</span>` +
@@ -2509,18 +2628,44 @@ function hideMenu() {
   if (m.hidden) return;
   m.hidden = true;
   m.innerHTML = '';
+  $('#zoomVal').setAttribute('aria-expanded', 'false');
 }
-document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctxmenu')) hideMenu(); }, true);
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctxmenu') && !e.target.closest('#zoomVal')) hideMenu(); }, true);
 viewer.addEventListener('scroll', hideMenu, { passive: true });
 window.addEventListener('blur', hideMenu);
 
+// Au clavier (Maj+F10, touche Menu), le menu s'ouvre sur la sélection
+document.addEventListener('contextmenu', e => {
+  if (!S.sid || e.target.closest('.page') || e.target.closest('.thumb') || isTyping()) return;
+  const it = selEls()[0];
+  if (!it) return;
+  e.preventDefault();
+  const r = pageEl(it.page).getBoundingClientRect(), b = it.el.bbox;
+  const pt = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+  pageMenu(it.page, pt, r.left + pt.x * S.zoom, r.top + pt.y * S.zoom);
+});
 pagesEl.addEventListener('contextmenu', e => {
   const pe = e.target.closest('.page');
   if (!pe || !S.sid || e.target.closest('.editor-wrap') || e.target.closest('.fieldeditor')) return;
   e.preventDefault();
-  flushPending();
   const p = +pe.dataset.p;
-  const pt = ptFromEvent(e, p);
+  pageMenu(p, ptFromEvent(e, p), e.clientX, e.clientY);
+});
+// Tab / Maj+Tab : élément suivant / précédent de la page courante (ordre de lecture)
+function cycleElement(dir) {
+  const p = S.sel.length ? S.sel[0].page : S.current;
+  const els = (S.els[p] || []).filter(el => !isBig(p, el)).sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
+  if (!els.length) return;
+  const cur = S.sel.length ? els.findIndex(el => el.id === S.sel[0].id) : -1;
+  const el = els[(cur + dir + els.length) % els.length] || els[0];
+  setSelection([{ page: p, id: el.id }]);
+  const d = pageEl(p);
+  const y = d.offsetTop + el.bbox[1] * S.zoom;
+  if (y < viewer.scrollTop + 80 || y > viewer.scrollTop + viewer.clientHeight - 80) viewer.scrollTo({ top: y - viewer.clientHeight / 3 });
+  hint(`${escapeHtml(elLabel(p, el))} · <b>Entrée</b> modifier · <b>Suppr</b> effacer · <b>flèches</b> déplacer · <b>Maj+F10</b> menu`, false);
+}
+function pageMenu(p, pt, clientX, clientY) {
+  flushPending();
   setCurrentPage(p);
   if (S.tool !== 'select') setTool('select');
   const el = hitTest(p, pt.x, pt.y);
@@ -2558,8 +2703,8 @@ pagesEl.addEventListener('contextmenu', e => {
     items.push({ sep: true });
     items.push({ label: 'Tout sélectionner sur la page', icon: 'select', kbd: 'Ctrl+A', fn: () => setSelection((S.els[p] || []).filter(x => !isBig(p, x)).map(x => ({ page: p, id: x.id }))) });
   }
-  showMenu(e.clientX, e.clientY, items);
-});
+  showMenu(clientX, clientY, items);
+}
 
 $('#thumbs').addEventListener('contextmenu', e => {
   const t = e.target.closest('.thumb');
@@ -2569,7 +2714,9 @@ $('#thumbs').addEventListener('contextmenu', e => {
   if (!S.pageSel.has(p)) { S.pageSel = new Set(); setCurrentPage(p, true); syncThumbState(); }
   const pages = S.pageSel.size > 1 ? pickedPages() : [p];
   const lbl = pages.length > 1 ? ` (${pages.length} pages)` : '';
-  showMenu(e.clientX, e.clientY, [
+  const tr = t.getBoundingClientRect();
+  const x = e.clientX || tr.left + tr.width / 2, y = e.clientY || tr.top + tr.height / 2;  // au clavier
+  showMenu(x, y, [
     { label: 'Pivoter à droite' + lbl, icon: 'rotate', fn: () => pageAction('rotate', pages) },
     { label: 'Pivoter à gauche' + lbl, icon: 'undo', fn: () => pageAction('rotateLeft', pages) },
     { label: 'Dupliquer' + lbl, icon: 'copy', fn: () => pageAction('duplicate', pages) },
@@ -2620,9 +2767,9 @@ function openField(p, el, focusNext) {
   let input;
   if (el.kind === 'combo' || el.kind === 'list') {
     input = document.createElement('select');
-    const choices = el.choices || [];
-    input.innerHTML = (el.kind === 'combo' && !choices.includes(el.value) ? `<option value="">${escapeHtml(el.value || '—')}</option>` : '') +
-      choices.map(c => `<option ${c === el.value ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('');
+    const choices = (el.choices || []).map(c => (Array.isArray(c) ? c : [c, c]));  // [valeur, libellé]
+    input.innerHTML = (!choices.some(c => c[0] === el.value) ? `<option value="${escapeHtml(el.value || '')}">${escapeHtml(el.value || '—')}</option>` : '') +
+      choices.map(c => `<option value="${escapeHtml(c[0])}" ${c[0] === el.value ? 'selected' : ''}>${escapeHtml(c[1])}</option>`).join('');
     input.addEventListener('change', () => closeFieldEditor(false));
   } else {
     input = document.createElement(el.multiline ? 'textarea' : 'input');
@@ -2671,8 +2818,9 @@ function closeFieldEditor(cancel) {
   hint(null);
   if (!cancel && value !== F0.start) runOp({ op: 'fill_field', page: F0.p, xref: F0.el.xref, value });
 }
-function nextField(dir) {
-  const cur = fieldEd;
+// from : champ sélectionné (case à cocher…) d'où l'on repart, à défaut du champ en saisie
+function nextField(dir, from) {
+  const cur = fieldEd || (from ? { p: from.page, el: from.el } : null);
   const list = allFields();
   closeFieldEditor(false);
   if (!list.length) return;
@@ -2682,11 +2830,12 @@ function nextField(dir) {
   if (!S.visible.has(p)) scrollToPage(p, false);
   setCurrentPage(p);
   // la page vient d'être modifiée : on attend ses éléments à jour
+  let tries = 0;
   const go = () => {
     const fresh = (S.els[p] || []).find(x => x.type === 'widget' && x.xref === el.xref);
-    if (!fresh) { setTimeout(go, 80); return; }
+    if (!fresh) { if (++tries < 40) setTimeout(go, 80); return; }
     if (fresh.kind === 'text' || fresh.kind === 'combo' || fresh.kind === 'list') openField(p, fresh, true);
-    else { setSelection([{ page: p, id: fresh.id }]); toast('Case ou bouton : Entrée pour cocher, Tab pour continuer', 'info', 2500); }
+    else { setSelection([{ page: p, id: fresh.id }]); hint('<b>Entrée</b> ou <b>Espace</b> : cocher · <b>Tab</b> : champ suivant · <b>Maj+Tab</b> : précédent', true); }
   };
   queue.then(go);
 }
@@ -2772,6 +2921,7 @@ function signatureDialog() {
       <div class="sigpad-wrap"><canvas class="sigpad" width="900" height="300" aria-label="Zone de signature"></canvas><div class="sigline">Signature</div></div>
       <div class="sig-tools"><label>Couleur ${swatches('sigColor', '#1a2a6c', ['#111111', '#1a2a6c', '#0090ff', '#e5484d'])}</label><button class="btn small" data-sig="clear">${icon('trash')}Effacer</button></div>`,
     buttons: [{ label: 'Annuler', value: null }, { label: 'Enregistrer la signature', value: 'save', primary: true }],
+    sticky: () => strokes.length > 0,  // un clic à côté ne jette pas le tracé
     onOpen: (m) => {
       const cv = m.querySelector('canvas'), ctx = cv.getContext('2d');
       const redraw = () => {
@@ -2833,10 +2983,19 @@ function exportDialog() {
       });
     },
     collect: m => m._read(),
+    sticky: true,
+    validate: m => {
+      const v = m._read();
+      if (v.mode !== 'range') return null;
+      const spec = v.range.replace(/\s+/g, '');
+      if (!/^\d+(-\d+)?(,\d+(-\d+)?)*$/.test(spec)) return 'Pages illisibles : écrivez par exemple 1-3, 5';
+      const bad = spec.split(/[,-]/).map(Number).find(x => x < 1 || x > n);
+      if (bad != null) return `La page ${bad} n'existe pas : le document en compte ${n}.`;
+      return null;
+    },
   }).then(v => {
     if (!v || typeof v !== 'object') return;
     const pages = v.mode === 'picked' ? pagesSpec(picked) : v.mode === 'range' ? v.range.replace(/\s+/g, '') : '';
-    if (v.mode === 'range' && !/^\d+(-\d+)?(,\d+(-\d+)?)*$/.test(pages)) { toast('Pages illisibles : écrivez par exemple 1-3, 5', 'error', 4000); return; }
     download({ pages, compress: v.compress, name: v.name || undefined });
   });
 }
@@ -2861,6 +3020,10 @@ $('#btnHelp').onclick = showHelp;
 $('#zoomIn').onclick = () => setZoom(S.zoom * 1.2);
 $('#zoomOut').onclick = () => setZoom(S.zoom / 1.2);
 $('#zoomVal').onclick = zoomMenu;
+$('#btnThumbsToggle').onclick = () => { document.body.classList.toggle('show-thumbs'); document.body.classList.remove('show-panel'); };
+$('#btnPanelToggle').onclick = () => { document.body.classList.toggle('show-panel'); document.body.classList.remove('show-thumbs'); };
+// un panneau flottant se referme quand on revient sur la page
+viewer.addEventListener('pointerdown', () => document.body.classList.remove('show-thumbs', 'show-panel'));
 $('#pagePrev').onclick = () => gotoPage(S.current - 1);
 $('#pageNext').onclick = () => gotoPage(S.current + 1);
 {
