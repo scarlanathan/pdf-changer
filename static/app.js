@@ -4,6 +4,8 @@
  * dans l'espace « affiché » de la page (rotation déjà appliquée). */
 
 // ------------------------------------------------------------------ icônes
+// Plusieurs tracés reprennent ou adaptent Feather Icons (MIT, © 2013-2023 Cole Bemis)
+// et Lucide (ISC, © Lucide Icons and Contributors) : voir THIRD_PARTY_NOTICES.md.
 const ICONS = {
   select: '<path d="M5 3l14 8-6 1.8L10.5 19z"/>',
   text: '<path d="M5 7V5h14v2M12 5v14M9 19h6"/>',

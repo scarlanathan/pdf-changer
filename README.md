@@ -107,3 +107,5 @@ Ce programme est un logiciel libre, distribué sous la licence **GNU Affero Gene
 service en ligne. Il est fourni sans aucune garantie.
 
 PDF Changer s'appuie sur [PyMuPDF](https://github.com/pymupdf/PyMuPDF), lui-même sous licence AGPL-3.0.
+Les licences des autres composants (bibliothèques, icônes Feather et Lucide) sont détaillées dans
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

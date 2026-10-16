@@ -81,6 +81,7 @@ def main():
     subprocess.run(cmd, check=True, cwd=HERE)
     out = os.path.join(HERE, "dist", NAME)
     shutil.copy(os.path.join(HERE, "LICENSE"), os.path.join(out, "LICENSE.txt"))  # AGPL : jointe au programme
+    shutil.copy(os.path.join(HERE, "THIRD_PARTY_NOTICES.md"), os.path.join(out, "THIRD_PARTY_NOTICES.md"))
     # archive prête à copier sur un autre PC
     archive = os.path.join(HERE, "dist", NAME + " (Windows).zip")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
