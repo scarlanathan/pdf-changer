@@ -80,6 +80,7 @@ def main():
     print(" ".join('"%s"' % c if " " in c else c for c in cmd))
     subprocess.run(cmd, check=True, cwd=HERE)
     out = os.path.join(HERE, "dist", NAME)
+    shutil.copy(os.path.join(HERE, "LICENSE"), os.path.join(out, "LICENSE.txt"))  # AGPL : jointe au programme
     # archive prête à copier sur un autre PC
     archive = os.path.join(HERE, "dist", NAME + " (Windows).zip")
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
